@@ -1,0 +1,29 @@
+budget:
+  global_usd: 230
+  default_job_cap_usd: 5
+  require_confirmation_above_usd: 1
+  hard_stop_usd: 220
+
+limits:
+  max_file_mb: 250
+  max_pages: 500
+  max_ai_pages_per_job: 100
+  max_concurrent_gpu_jobs: 1
+
+cache:
+  enabled: true
+  key_fields:
+    - document_sha256
+    - figure_sha256
+    - model_id
+    - model_revision
+    - prompt_version
+    - preprocess_version
+
+modal:
+  gpu: L4
+  min_containers: 0
+  max_containers: 1
+  buffer_containers: 0
+  scaledown_window_seconds: 10
+  timeout_seconds: 900

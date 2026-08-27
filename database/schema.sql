@@ -1,0 +1,12 @@
+-- NOT A GENERATED SCHEMA SNAPSHOT.
+--
+-- The former hand-written scaffold was retired because it incorrectly labeled arbitrary native
+-- project coordinates as EPSG:4326 and drifted from the application contracts.
+--
+-- Alembic revision 20260827_0001 is authoritative. Regenerate this reference only in an approved,
+-- dependency-complete environment with:
+--
+--     uv run alembic upgrade head --sql
+--
+-- Prepend the generated revision/read-only banner and verify the captured SQL against the
+-- migration before replacing this notice. Do not execute this notice as a schema script.

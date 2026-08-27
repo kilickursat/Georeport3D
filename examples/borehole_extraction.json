@@ -1,0 +1,52 @@
+{
+  "document_id": "demo-document",
+  "boreholes": [
+    {
+      "borehole_id": "BH-07",
+      "collar": {
+        "easting": 456732.21,
+        "northing": 3987210.64,
+        "elevation": 124.6,
+        "crs": "EPSG:0000"
+      },
+      "total_depth": 35.0,
+      "intervals": [
+        {
+          "depth_from": 0.0,
+          "depth_to": 3.2,
+          "lithology": "fill",
+          "weathering": null,
+          "rqd": null,
+          "ucs_mpa": null,
+          "confidence": 0.98,
+          "evidence": [
+            {
+              "document_id": "demo-document",
+              "page_number": 146,
+              "source_type": "borehole_log",
+              "bbox": [100, 100, 200, 300],
+              "excerpt": null,
+              "model_id": "unsloth/Qwen3.6-27B-NVFP4",
+              "confidence": 0.98
+            }
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "document_id": "demo-document",
+          "page_number": 146,
+          "source_type": "borehole_log",
+          "bbox": [100, 100, 200, 300],
+          "excerpt": null,
+          "model_id": "unsloth/Qwen3.6-27B-NVFP4",
+          "confidence": 0.98
+        }
+      ]
+    }
+  ],
+  "contacts": [],
+  "sections": [],
+  "notes": [],
+  "extraction_confidence": 0.98
+}
