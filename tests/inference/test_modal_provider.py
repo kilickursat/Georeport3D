@@ -128,7 +128,7 @@ class ModalInferenceProviderTests(unittest.TestCase):
             resolver=resolver,
         )
 
-        results = provider.extract_batch((item for item in [request]))
+        results = provider.extract_batch(item for item in [request])
 
         self.assertEqual(resolver.calls, 1)
         self.assertEqual(len(method.calls), 1)

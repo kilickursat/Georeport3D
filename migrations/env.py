@@ -7,7 +7,6 @@ from georeport3d.config import Settings
 from georeport3d.db import models  # noqa: F401
 from georeport3d.db.base import Base
 
-
 config = context.config
 
 if config.config_file_name is not None:

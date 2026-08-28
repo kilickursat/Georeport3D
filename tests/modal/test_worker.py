@@ -10,7 +10,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 WORKER_PATH = REPOSITORY_ROOT / "deployment" / "modal_worker.py"
 PURE_HELPERS = {
@@ -472,7 +471,10 @@ class ModalWorkerContractTests(unittest.TestCase):
         volumes = _keyword(class_call, "volumes")
         self.assertIsInstance(volumes, ast.Dict)
         self.assertEqual(
-            {ast.literal_eval(key): value.id for key, value in zip(volumes.keys, volumes.values)},
+            {
+                ast.literal_eval(key): value.id
+                for key, value in zip(volumes.keys, volumes.values, strict=True)
+            },
             {
                 "/root/.cache/huggingface": "hf_cache",
                 "/root/.cache/vllm": "vllm_cache",

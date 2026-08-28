@@ -14,7 +14,6 @@ from georeport3d.inference.base import (
     InferenceUnavailableError,
 )
 
-
 _FAILURE_MESSAGES = {
     "INVALID_REQUEST": "request was invalid",
     "INVALID_MODEL_JSON": "model output was not valid JSON",
