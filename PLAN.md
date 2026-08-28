@@ -32,11 +32,21 @@ of our own is published there.
      PostGIS responded and all ten expected tables were created. Partial evidence for
      S-02 and C-18; repositories and transaction boundaries remain outstanding in step 6.
    - CI is GPU-free by construction: `INFERENCE_PROVIDER=mock`, no Modal credential.
-3. ⬜ **Make the worker configurable and pinned** — Add
-   `secrets=[modal.Secret.from_name("huggingface-secret")]` to `@app.cls` in
-   `deployment/modal_worker.py`, move `MODEL_ID` into `image.env()` so it reaches the
-   container, and pin `MODEL_REVISION`. Extend `tests/modal/test_deployment_contract.py`
-   to assert the secret and revision are declared.
+3. ✅ **Make the worker configurable and pinned** — `huggingface-secret` is attached to
+   `@app.cls`, `MODEL_ID` and `MODEL_REVISION` are baked into `image.env()` so they reach
+   the container, and vLLM receives `--revision` so a container cannot drift to a newer
+   upload of the same repository.
+   - Output: `deployment/modal_worker.py`, `deployment/README.md`
+   - Contract tests extended in `tests/modal/test_deployment_contract.py`; the
+     `_vllm_command` assertion in `tests/modal/test_worker.py` was updated deliberately,
+     since pinning changes that contract.
+   - Follow-up: the reported `model_revision` in the result envelope still comes from the
+     request, and `Settings.model_revision` defaults to `None`, so the CPU side reports
+     "unknown" rather than the revision the container actually serves. The provider
+     verifies the worker echoes the request, so the worker must not report its own value
+     unilaterally — making the two agree, and rejecting a mismatch, is a contract change
+     spanning both sides. It belongs with the job controller in step 7, which is where the
+     cache key that consumes `model_revision` is built.
 4. ✅ **Deploy workflow** — `.github/workflows/deploy.yml`, `workflow_dispatch` only,
    behind the `modal-production` environment, which requires a reviewer and permits
    protected branches only.
