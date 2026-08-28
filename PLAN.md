@@ -47,9 +47,18 @@ of our own is published there.
      unilaterally — making the two agree, and rejecting a mismatch, is a contract change
      spanning both sides. It belongs with the job controller in step 7, which is where the
      cache key that consumes `model_revision` is built.
-4. ⬜ **Deploy workflow** — `.github/workflows/deploy.yml`, manual trigger on `main`
-   behind an approval environment, reading `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` /
-   `HF_TOKEN` from repo secrets. Never auto-deploys on merge — a deploy costs money.
+4. ✅ **Deploy workflow** — `.github/workflows/deploy.yml`, `workflow_dispatch` only,
+   behind the `modal-production` environment, which requires a reviewer and permits
+   protected branches only.
+   - Output: `.github/workflows/deploy.yml`
+   - Reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. `HF_TOKEN` is deliberately not
+     passed: weights are fetched inside the Modal container using the attached
+     `huggingface-secret`, never on a runner, so a repository secret would do nothing.
+   - Requires typing `deploy` to confirm, and rejects a moving ref for `model_revision`.
+   - Never `pull_request`-triggered. The repository is public, so a fork must not be able
+     to reach the Modal budget.
+   - Running it is still an unexecuted, user-authorized action; step 14 is where it is
+     first invoked.
 
 ## Phase 1 — Complete the backend slice
 
