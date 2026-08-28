@@ -163,6 +163,65 @@ cost boundaries, and the evidence required before and after a deploy.
 | [Security and data policy](docs/11_SECURITY_AND_DATA_POLICY.md) | Handling confidential reports |
 | [Readiness register](docs/19_PRE_DEPLOYMENT_READINESS.md) | Per-item deployment evidence |
 
+## Technology
+
+**Application and API**
+
+[Python](https://www.python.org/) 3.12–3.13 ·
+[FastAPI](https://fastapi.tiangolo.com/) ·
+[Uvicorn](https://github.com/Kludex/uvicorn) ·
+[Pydantic](https://docs.pydantic.dev/) ·
+[pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) ·
+[python-multipart](https://github.com/Kludex/python-multipart) ·
+[orjson](https://github.com/ijl/orjson) ·
+[PyYAML](https://pyyaml.org/)
+
+**Spatial data store**
+
+[PostgreSQL](https://www.postgresql.org/) ·
+[PostGIS](https://postgis.net/) ·
+[SQLAlchemy](https://www.sqlalchemy.org/) ·
+[GeoAlchemy 2](https://geoalchemy-2.readthedocs.io/) ·
+[Alembic](https://alembic.sqlalchemy.org/) ·
+[psycopg 3](https://www.psycopg.org/psycopg3/)
+
+**Document processing**
+
+[Docling](https://github.com/docling-project/docling) ·
+[python-docx](https://python-docx.readthedocs.io/)
+
+**Inference**
+
+[Modal](https://modal.com/) ·
+[vLLM](https://github.com/vllm-project/vllm) ·
+[Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) ·
+[Hugging Face Hub](https://huggingface.co/) ·
+[NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) ·
+[FlashInfer](https://github.com/flashinfer-ai/flashinfer) ·
+[CUTLASS](https://github.com/NVIDIA/cutlass) ·
+[OpenAI Python client](https://github.com/openai/openai-python) (for vLLM's OpenAI-compatible API)
+
+**Tooling and CI**
+
+[uv](https://docs.astral.sh/uv/) ·
+[Ruff](https://docs.astral.sh/ruff/) ·
+[pytest](https://docs.pytest.org/) ·
+[setuptools](https://setuptools.pypa.io/) ·
+[build](https://build.pypa.io/) ·
+[Docker](https://www.docker.com/) ·
+[GitHub Actions](https://github.com/features/actions)
+
+**Web and 3D viewer — planned, not yet implemented**
+
+[Next.js](https://nextjs.org/) ·
+[React](https://react.dev/) ·
+[CesiumJS](https://cesium.com/platform/cesiumjs/) ·
+[Three.js](https://threejs.org/) ·
+[React Three Fiber](https://r3f.docs.pmnd.rs/)
+
+These are the documented target stack for the browser application. See the status table above:
+no frontend source exists yet.
+
 ## Contributing
 
 Contributions are welcome. Every pull request must keep the CI gates green: Ruff, the full test
@@ -172,6 +231,36 @@ migration.
 Two rules are non-negotiable in review. Extraction code must never produce a coordinate, CRS, or
 geological contact that is not traceable to source evidence. Generated artifacts, credentials,
 uploaded documents, model weights, and provider logs must never be committed.
+
+## Acknowledgements
+
+GeoReport3D is assembled from open-source work by others, and it would not be feasible without
+it. Particular thanks to:
+
+- **[Docling](https://github.com/docling-project/docling)**, from IBM Research, which does the
+  document conversion this project depends on to decide what a page actually contains before any
+  model is asked about it.
+- **[vLLM](https://github.com/vllm-project/vllm)** for the serving layer that makes a 27B model
+  practical on a single GPU.
+- **[Qwen](https://github.com/QwenLM)**, from Alibaba, for the vision-language model, and
+  **[Unsloth](https://huggingface.co/unsloth)** for the NVFP4 quantisation that lets it fit on
+  24 GB.
+- **[PostGIS](https://postgis.net/)** and the wider [OSGeo](https://www.osgeo.org/) community,
+  whose work underpins every spatial guarantee this project makes.
+- **[SQLAlchemy](https://www.sqlalchemy.org/)** and **[Alembic](https://alembic.sqlalchemy.org/)**
+  for a data layer strict enough to encode geotechnical constraints in the schema itself.
+- **[FastAPI](https://fastapi.tiangolo.com/)** and **[Pydantic](https://docs.pydantic.dev/)**,
+  which make validation-first API design the path of least resistance.
+- **[Astral](https://astral.sh/)** for [uv](https://docs.astral.sh/uv/) and
+  [Ruff](https://docs.astral.sh/ruff/).
+- **[Modal](https://modal.com/)** for serverless GPU with scale-to-zero, without which the cost
+  model for this project would not work.
+- **[CesiumJS](https://cesium.com/platform/cesiumjs/)**, **[Three.js](https://threejs.org/)**, and
+  **[React Three Fiber](https://r3f.docs.pmnd.rs/)** for the rendering stack the viewer is
+  designed around.
+
+Listing a project here records a dependency and our gratitude for it. It does not imply that its
+authors endorse, review, or support GeoReport3D.
 
 ## License
 
