@@ -76,10 +76,21 @@ of our own is published there.
    - `document*` was missing from the packaging include list, so the package would
      have been absent from the built wheel.
    - Follow-up: the inventory is not yet wired to any route. Step 8 consumes it.
-6. ⬜ **PostGIS repositories** — Run `alembic upgrade head` against real PostGIS in
-   Docker, add repositories and transaction boundaries for documents, observations,
-   evidence links, jobs, usage, and cache records (C-18). Regenerate
-   `database/schema.sql` from revision `20260827_0001`, labeled non-authoritative (S-01).
+6. ✅ **PostGIS repositories** — Documents, observations, evidence links, jobs, usage,
+   and cache records can now be read and written (C-18). `database/schema.sql` is
+   regenerated from revision `20260827_0001` behind a non-authoritative banner (S-01).
+   - Output: `georeport3d/db/session.py`, `georeport3d/db/repositories.py`,
+     `tests/db/conftest.py`, `tests/db/test_repositories.py`, `database/schema.sql`
+   - 11 new tests, green against real PostGIS in CI: `12 passed, 1 skipped,
+     231 deselected` in the `postgis` job.
+   - Repositories never commit; `unit_of_work` owns the transaction, so a cache
+     entry, usage record, and job transition commit together or not at all.
+   - Enforced in the repository rather than trusted to callers: evidence must belong
+     to the document being persisted; geometry is written only with an explicit SRID,
+     never one derived from CRS text; a repeated idempotency key returns the existing
+     job with its original reservation.
+   - Follow-up: the borehole geometry column stays null until an SRID can be resolved
+     deterministically from the document, which is step 10.
 7. ⬜ **Durable cache and job controller** — Replace the in-memory budget ledger and
    key-only cache (C-10, C-11) with persistent, idempotent storage enforcing
    `cache → estimate → reserve → infer → validate → persist → reconcile`.
