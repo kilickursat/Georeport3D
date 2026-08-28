@@ -1,0 +1,79 @@
+name: Deploy (Modal)
+
+# Manual only. This workflow must never be triggered by pull_request: the
+# repository is public, and a fork must not be able to spend the Modal budget.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm. Building and registering the app can incur charges before any inference.'
+        required: true
+        default: ""
+      model_id:
+        description: "Hugging Face repository the container serves"
+        required: true
+        default: "unsloth/Qwen3.6-27B-NVFP4"
+      model_revision:
+        description: "Exact revision to pin. Never a moving ref."
+        required: true
+        default: "ccdaab7e68af2409599b8949a8f2685703c9bae5"
+
+permissions:
+  contents: read
+
+# A second deploy must queue rather than race the first.
+concurrency:
+  group: modal-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: modal deploy
+    runs-on: ubuntu-latest
+    environment: modal-production
+    steps:
+      - name: Require explicit confirmation
+        if: inputs.confirm != 'deploy'
+        run: |
+          echo "::error::Confirmation must be exactly 'deploy'."
+          exit 1
+
+      - name: Require a moving ref to be rejected
+        if: inputs.model_revision == 'main' || inputs.model_revision == 'HEAD'
+        run: |
+          echo "::error::model_revision must be an exact commit, not a moving ref."
+          exit 1
+
+      - uses: actions/checkout@v7.0.1
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.11.33"
+          enable-cache: true
+
+      - name: Sync locked dependencies
+        run: uv sync --frozen --python 3.13 --extra modal
+
+      - name: Record deploy identity
+        run: |
+          echo "commit:   ${{ github.sha }}"
+          echo "model:    ${{ inputs.model_id }}"
+          echo "revision: ${{ inputs.model_revision }}"
+          uv run --python 3.13 python -c "import modal; print('modal SDK:', modal.__version__)"
+
+      # Registers the app declarations. It does not call QwenWorker.extract_batch,
+      # so no GPU is allocated and no inference runs. Weights are fetched into the
+      # Modal volume on the first authorized invocation, never onto a runner.
+      - name: Deploy the worker
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          MODEL_ID: ${{ inputs.model_id }}
+          MODEL_REVISION: ${{ inputs.model_revision }}
+        run: uv run --python 3.13 modal deploy deployment/modal_worker.py
+
+      - name: Rollback identifier
+        if: always()
+        run: |
+          echo "Roll back by re-running this workflow from the previous green commit on main."
+          echo "deployed_commit=${{ github.sha }}"
