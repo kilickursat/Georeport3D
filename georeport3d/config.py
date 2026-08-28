@@ -12,7 +12,6 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 CacheKeyField = Literal[
     "document_sha256",
     "figure_sha256",

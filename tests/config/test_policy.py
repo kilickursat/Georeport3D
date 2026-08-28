@@ -5,7 +5,6 @@ from pydantic import ValidationError
 
 from georeport3d.config import Policy, Settings, load_policy
 
-
 CANONICAL_CACHE_KEY_FIELDS = [
     "document_sha256",
     "figure_sha256",
