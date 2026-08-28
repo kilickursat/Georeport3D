@@ -11,6 +11,7 @@ import urllib.request
 import modal
 
 MODEL_ID = os.getenv("MODEL_ID", "unsloth/Qwen3.6-27B-NVFP4")
+MODEL_REVISION = os.getenv("MODEL_REVISION", "ccdaab7e68af2409599b8949a8f2685703c9bae5")
 VLLM_PORT = 8000
 GPU = "L4"
 MIN_CONTAINERS = 0
@@ -38,16 +39,26 @@ image = (
         "openai==1.100.0",
         "httpx==0.28.1",
     )
-    .env({"HF_XET_HIGH_PERFORMANCE": "1"})
+    # Module constants are read again inside the container, so the selection made at
+    # deploy time must be baked into the image rather than left to the container default.
+    .env(
+        {
+            "HF_XET_HIGH_PERFORMANCE": "1",
+            "MODEL_ID": MODEL_ID,
+            "MODEL_REVISION": MODEL_REVISION,
+        }
+    )
 )
 
 
-def _vllm_command(model_id: str) -> list[str]:
+def _vllm_command(model_id: str, model_revision: str) -> list[str]:
     """Build the fixed loopback vLLM command for one container."""
     return [
         "vllm",
         "serve",
         model_id,
+        "--revision",
+        model_revision,
         "--host",
         "127.0.0.1",
         "--port",
@@ -199,6 +210,7 @@ def _success_result(
     timeout=TIMEOUT_SECONDS,
     startup_timeout=STARTUP_TIMEOUT_SECONDS,
     retries=0,
+    secrets=[modal.Secret.from_name("huggingface-secret")],
     volumes={
         "/root/.cache/huggingface": hf_cache,
         "/root/.cache/vllm": vllm_cache,
@@ -211,7 +223,7 @@ class QwenWorker:
     def start(self) -> None:
         """Start vLLM once and wait for its loopback API."""
         server = subprocess.Popen(
-            _vllm_command(MODEL_ID),
+            _vllm_command(MODEL_ID, MODEL_REVISION),
             stdout=None,
             stderr=subprocess.STDOUT,
             text=True,
