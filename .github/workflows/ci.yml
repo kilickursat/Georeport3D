@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # No GPU, no Modal, no paid call is permitted in normal CI.
+  INFERENCE_PROVIDER: mock
+  UV_VERSION: "0.11.33"
+
+jobs:
+  gates:
+    name: gates (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Lock is current
+        run: uv lock --check
+
+      - name: Sync locked dependencies
+        run: uv sync --frozen --python ${{ matrix.python-version }} --extra dev --extra modal
+
+      - name: Ruff
+        run: uv run --python ${{ matrix.python-version }} ruff check .
+
+      - name: Pytest
+        run: uv run --python ${{ matrix.python-version }} pytest -q
+
+      - name: Package build
+        run: uv run --python ${{ matrix.python-version }} python -m build
+
+      - name: API import
+        run: >-
+          uv run --python ${{ matrix.python-version }}
+          python -c "from apps.api.app.main import app; print(app.title, app.version)"
+
+  postgis:
+    name: postgis migration
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: georeport3d_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d georeport3d_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Sync locked dependencies
+        run: uv sync --frozen --python 3.13 --extra dev --extra modal
+
+      - name: Migration integration test
+        env:
+          GEOREPORT3D_RUN_POSTGIS_INTEGRATION: "1"
+          # The service container is published on the runner's loopback address,
+          # which the test requires before it will accept a target.
+          TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/georeport3d_test
+        run: uv run --python 3.13 pytest -q -m integration
