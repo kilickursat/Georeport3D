@@ -175,7 +175,7 @@ class _Response:
 class ModalWorkerContractTests(unittest.TestCase):
     def test_vllm_command_uses_loopback_nvfp4_and_two_mtp_tokens(self) -> None:
         helpers = _load_helpers()
-        command = helpers["_vllm_command"]("unsloth/Qwen3.6-27B-NVFP4")
+        command = helpers["_vllm_command"]("unsloth/Qwen3.6-27B-NVFP4", "revision-1")
 
         self.assertEqual(
             command,
@@ -183,6 +183,8 @@ class ModalWorkerContractTests(unittest.TestCase):
                 "vllm",
                 "serve",
                 "unsloth/Qwen3.6-27B-NVFP4",
+                "--revision",
+                "revision-1",
                 "--host",
                 "127.0.0.1",
                 "--port",

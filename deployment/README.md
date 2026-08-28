@@ -17,6 +17,8 @@ returns a redacted error or evidence.
 - App: `georeport3d-qwen`
 - Class: `QwenWorker`
 - Model: `unsloth/Qwen3.6-27B-NVFP4`
+- Model revision: `ccdaab7e68af2409599b8949a8f2685703c9bae5`
+- Secret: `huggingface-secret`
 - GPU: one L4
 - Containers: minimum 0, maximum 1, buffer 0
 - Scale-down window: 10 seconds
@@ -28,6 +30,17 @@ returns a redacted error or evidence.
 Each warm class container owns one inherited-output vLLM subprocess. Each batch uses one
 loopback OpenAI-compatible client and returns one validated envelope per input. Production has no
 automatic fallback to mock inference.
+
+`MODEL_ID` and `MODEL_REVISION` are read from the environment at deploy time and baked into the
+image, because the same module constants are read again inside the container. Overriding either
+one at deploy time therefore selects what the container serves; leaving both unset pins the
+checkpoint above. vLLM receives the revision explicitly, so a container cannot drift to a newer
+upload of the same repository.
+
+The `huggingface-secret` Modal secret is attached to the class and must expose `HF_TOKEN`. The
+pinned checkpoint is public and ungated, so the token is not required for access; it raises the
+anonymous download rate limit and keeps the deployment working if the repository ever becomes
+gated.
 
 ## Later operator commands
 

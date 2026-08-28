@@ -28,6 +28,12 @@ class DeploymentContractTests(unittest.TestCase):
     def test_worker_keeps_declared_cost_and_lifecycle_contract(self) -> None:
         required = (
             'MODEL_ID = os.getenv("MODEL_ID", "unsloth/Qwen3.6-27B-NVFP4")',
+            'MODEL_REVISION = os.getenv(',
+            '"ccdaab7e68af2409599b8949a8f2685703c9bae5"',
+            '"MODEL_ID": MODEL_ID,',
+            '"MODEL_REVISION": MODEL_REVISION,',
+            '"--revision",',
+            'secrets=[modal.Secret.from_name("huggingface-secret")]',
             'GPU = "L4"',
             "MIN_CONTAINERS = 0",
             "MAX_CONTAINERS = 1",
