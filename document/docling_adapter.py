@@ -205,11 +205,33 @@ class DoclingDocumentParser:
 
     @staticmethod
     def _default_converter() -> _Converter:
+        """Build the lean pipeline the inventory actually needs.
+
+        Two of Docling's defaults are switched off deliberately.
+
+        Table structure recognition runs TableFormer to recover cells inside a
+        table. The inventory only needs the table's region and page, which comes
+        from layout, so the stage costs time and buys nothing here. It also imports
+        opencv, which requires the X11 library `libxcb.so.1` and therefore fails on
+        a headless container unless that system package is added to the image.
+
+        OCR is off because the inventory reads the text layer. Scanned pages need a
+        deliberate decision about an OCR engine, its cost, and its accuracy, rather
+        than being switched on by a library default.
+        """
         try:
-            from docling.document_converter import DocumentConverter
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import DocumentConverter, PdfFormatOption
         except ImportError as exc:
             raise DocumentParserUnavailableError("document parser is not installed") from exc
-        return DocumentConverter()
+
+        options = PdfPipelineOptions()
+        options.do_ocr = False
+        options.do_table_structure = False
+        return DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+        )
 
     def parse(self, path: Path) -> ParsedDocument:
         """Parse one local document without leaking its content into errors."""
