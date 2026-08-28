@@ -33,8 +33,10 @@ jobs:
           version: "0.11.33"
           enable-cache: true
 
+      # Collection imports every test module before markers deselect anything, so
+      # this environment must satisfy the whole suite, not only the docling tests.
       - name: Sync with the document extra
-        run: uv sync --frozen --python 3.13 --extra dev --extra document
+        run: uv sync --frozen --python 3.13 --extra dev --extra document --extra modal
 
       - name: Real backend tests
         run: uv run --python 3.13 pytest -q -m docling
