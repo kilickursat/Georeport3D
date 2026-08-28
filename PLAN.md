@@ -43,9 +43,20 @@ of our own is published there.
 
 ## Phase 1 — Complete the backend slice
 
-5. ⬜ **Document inventory** — Fill the empty `document/` package (C-16): Docling
-   adapter, page inventory with provenance, figure candidate detection, borehole-log
-   classification, against deterministic PDF/DOCX fixtures.
+5. ✅ **Document inventory** — The empty `document/` package (C-16) now carries the
+   parse contract, a lazily imported Docling adapter, deterministic figure
+   classification, and a provenance-carrying inventory.
+   - Output: `document/base.py`, `document/classify.py`, `document/docling_adapter.py`,
+     `document/inventory.py`, `.github/workflows/document.yml`
+   - 49 new tests; suite is 233 passed, 1 skipped. Docling is not imported at module
+     load, so the API process and the normal CI gates stay free of it.
+   - Two defects the fakes could not have caught, both found by running the real
+     backend: DOCX reports no pagination at all, which silently produced an empty
+     inventory; and a bounding box with no page height cannot be converted from a
+     bottom-left origin, which would have placed "show source" on the wrong region.
+   - `document*` was missing from the packaging include list, so the package would
+     have been absent from the built wheel.
+   - Follow-up: the inventory is not yet wired to any route. Step 8 consumes it.
 6. ⬜ **PostGIS repositories** — Run `alembic upgrade head` against real PostGIS in
    Docker, add repositories and transaction boundaries for documents, observations,
    evidence links, jobs, usage, and cache records (C-18). Regenerate
