@@ -1,3 +1,17 @@
+<p align="center">
+  <picture>
+    <source
+      media="(prefers-color-scheme: dark)"
+      srcset="docs/assets/georeport3d-logo-dark-transparent.png"
+    >
+    <source
+      media="(prefers-color-scheme: light)"
+      srcset="docs/assets/georeport3d-logo.png"
+    >
+    <img src="docs/assets/georeport3d-logo.png" alt="GeoReport3D logo" width="820">
+  </picture>
+</p>
+
 # GeoReport3D MVP
 
 Open-source multimodal geotechnical document-to-evidence-to-3D-model foundation.
