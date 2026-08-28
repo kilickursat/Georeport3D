@@ -125,3 +125,19 @@ of our own is published there.
   charges before any inference. Each requires explicit authorization at the time.
 - **Step 1 may reshuffle Phase 1.** The full test suite has never been run. Real
   breakage gets reported before feature work begins, not folded in silently.
+
+## Open risks found while verifying the document backend
+
+- **Docling layout detection was not reproducible on a synthetic PDF.** Three runs of
+  the identical file with identical options recovered page 1 only, page 2 only, and
+  both. A fixture of bare text lines is out of distribution for a layout model trained
+  on real reports, so this may not occur on genuine documents — but it must be measured
+  before the cache is trusted, because the cache key in `georeport3d/services/cache.py`
+  assumes a given document and preprocess version always yield the same parse. If the
+  parser is nondeterministic on real reports, cached entries can disagree with a fresh
+  run. Verify with a real geotechnical PDF during step 16, and only then decide whether
+  the parse output itself needs to be content-hashed into the cache key.
+- **Text can be dropped without any error.** Docling attaches text to detected regions,
+  so a page whose layout detection fails reports no text at all rather than failing.
+  A borehole log could go unrouted because the words naming it never reached the
+  classifier. Needs a real-document benchmark before extraction accuracy is claimed.
