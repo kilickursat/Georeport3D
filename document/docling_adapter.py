@@ -229,11 +229,6 @@ class DoclingDocumentParser:
         options = PdfPipelineOptions()
         options.do_ocr = False
         options.do_table_structure = False
-        # Text is otherwise attached only to regions the layout model detected, so
-        # lines it misses are dropped entirely. The router classifies on page text,
-        # and a partial page silently weakens that signal, so take the backend's
-        # full text layer instead.
-        options.force_backend_text = True
         return DocumentConverter(
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
         )
