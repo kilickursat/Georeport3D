@@ -1,0 +1,48 @@
+name: Document backend
+
+# The Docling backend pulls a large dependency tree, so it is not part of the
+# gates that run on every pull request. It runs when the document pipeline or its
+# tests change, which is when the real backend contract can actually break.
+on:
+  pull_request:
+    paths:
+      - "document/**"
+      - "tests/document/**"
+      - ".github/workflows/document.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+  push:
+    branches: [main]
+    paths:
+      - "document/**"
+      - "tests/document/**"
+
+concurrency:
+  group: document-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docling:
+    name: real docling backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.11.33"
+          enable-cache: true
+
+      # Collection imports every test module before markers deselect anything, so
+      # this environment must satisfy the whole suite, not only the docling tests.
+      - name: Sync with the document extra
+        run: uv sync --frozen --python 3.13 --extra dev --extra document --extra modal
+
+      - name: Real backend tests
+        run: uv run --python 3.13 pytest -q -m docling
+
+      - name: Fail if the backend tests were skipped
+        run: |
+          uv run --python 3.13 pytest -q -m docling --collect-only \
+            | grep -q "test_real_backend" \
+            || { echo "::error::Docling tests did not collect."; exit 1; }
