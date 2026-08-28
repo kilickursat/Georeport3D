@@ -7,7 +7,6 @@ from urllib.parse import urlsplit
 
 import pytest
 
-
 EXPECTED_TABLES = {
     "projects",
     "documents",

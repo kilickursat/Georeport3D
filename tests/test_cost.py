@@ -2,7 +2,6 @@ import pytest
 
 from georeport3d.services.budget import BudgetLedger, GPUProfile
 
-
 INVALID_NUMBERS = (
     pytest.param(-1.0, id="negative"),
     pytest.param(float("nan"), id="nan"),

@@ -82,16 +82,31 @@ def test_storage_failure_has_stable_error_code(tmp_path) -> None:
     assert "disk unavailable" not in response.text
 
 
-def test_missing_filename_has_stable_error_code(tmp_path) -> None:
+def test_blank_filename_has_stable_error_code(tmp_path) -> None:
     client = _client_for(tmp_path)
 
+    response = client.post(
+        "/documents/upload",
+        files={"file": (" ", b"%PDF", "application/pdf")},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": {"code": "FILENAME_REQUIRED"}}
+
+
+def test_absent_filename_is_rejected_before_the_handler(tmp_path) -> None:
+    client = _client_for(tmp_path)
+
+    # An empty filename omits the multipart filename parameter entirely, so the part
+    # never becomes an UploadFile and framework validation rejects it first. Mapping
+    # this to a stable error code belongs with the wider error-code surface.
     response = client.post(
         "/documents/upload",
         files={"file": ("", b"%PDF", "application/pdf")},
     )
 
-    assert response.status_code == 400
-    assert response.json() == {"detail": {"code": "FILENAME_REQUIRED"}}
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "file"]
 
 
 def test_unsupported_type_has_stable_error_code(tmp_path) -> None:

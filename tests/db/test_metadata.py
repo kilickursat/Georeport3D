@@ -6,7 +6,6 @@ import ast
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 MODELS = ROOT / "georeport3d" / "db" / "models.py"
 MIGRATION = ROOT / "migrations" / "versions" / "20260827_0001_baseline.py"
