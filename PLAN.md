@@ -22,10 +22,16 @@ of our own is published there.
    - Build and API import passed unchanged.
    - Follow-up for step 8: an upload with no multipart filename parameter returns FastAPI's
      raw 422 validation body instead of a stable error code.
-2. ⬜ **CI workflow** — `.github/workflows/ci.yml` on every PR: `uv sync --frozen`,
-   Ruff, full pytest with `INFERENCE_PROVIDER=mock`, package build, API import.
-   Python 3.12/3.13 matrix, PostGIS service container so `tests/db/test_migrations.py`
-   runs instead of being skipped.
+2. ✅ **CI workflow** — `.github/workflows/ci.yml` enforces the section A gates on every
+   pull request.
+   - Output: `.github/workflows/ci.yml`
+   - `gates` job green on Python 3.12 and 3.13: lock currency, frozen sync, Ruff,
+     184 passed, build, API import.
+   - `postgis` job green: `1 passed, 184 deselected` against `postgis/postgis:17-3.5`.
+     This is the first execution of `alembic upgrade head` against a real database —
+     PostGIS responded and all ten expected tables were created. Partial evidence for
+     S-02 and C-18; repositories and transaction boundaries remain outstanding in step 6.
+   - CI is GPU-free by construction: `INFERENCE_PROVIDER=mock`, no Modal credential.
 3. ⬜ **Make the worker configurable and pinned** — Add
    `secrets=[modal.Secret.from_name("huggingface-secret")]` to `@app.cls` in
    `deployment/modal_worker.py`, move `MODEL_ID` into `image.env()` so it reaches the
