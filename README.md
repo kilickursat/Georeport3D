@@ -12,124 +12,167 @@
   </picture>
 </p>
 
-# GeoReport3D MVP
+<h1 align="center">GeoReport3D</h1>
 
-Open-source multimodal geotechnical document-to-evidence-to-3D-model foundation.
+<p align="center">
+  <strong>Turn geotechnical reports into verifiable 3D ground models — without inventing a single coordinate.</strong>
+</p>
 
-## What this repository is
+<p align="center">
+  <a href="https://github.com/kilickursat/Georeport3D/actions/workflows/ci.yml">
+    <img alt="CI" src="https://github.com/kilickursat/Georeport3D/actions/workflows/ci.yml/badge.svg">
+  </a>
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg">
+  </a>
+  <a href="pyproject.toml">
+    <img alt="Python" src="https://img.shields.io/badge/python-3.12%20%7C%203.13-blue.svg">
+  </a>
+  <a href="docs/19_PRE_DEPLOYMENT_READINESS.md">
+    <img alt="Status" src="https://img.shields.io/badge/status-pre--release-orange.svg">
+  </a>
+</p>
 
-GeoReport3D is a coder-ready MVP scaffold for ingesting PDF and DOCX geotechnical reports,
-extracting boreholes and geological evidence, validating provenance, storing structured data in
-PostGIS, and preparing spatial information for CesiumJS and Three.js visualization.
+---
 
-## Core architecture
+Geotechnical ground truth is locked inside PDFs. Borehole logs, cross-sections, and lab tables
+are drawn for humans, scattered across hundreds of pages, and rarely survive into a usable
+spatial model. GeoReport3D extracts that evidence with a multimodal model, refuses to emit
+anything it cannot cite back to a source page, and stores the result as queryable PostGIS
+geometry ready for 3D visualization.
 
-- CPU-first document processing.
-- Docling adapter for PDF and DOCX inventory.
-- Deterministic mock inference for local development and tests.
-- Modal serverless GPU inference for production.
-- Explicit budget authorization and versioned caching before any GPU call.
-- PostGIS as the authoritative project geometry store.
-- Provenance-aware evidence with no invented coordinates.
+The distinguishing constraint is provenance. Every extracted borehole, interval, and contact
+carries the document, page, and bounding box it came from, plus a confidence score and an
+explicit separation between what was *observed* and what was *inferred*. An extraction with no
+evidence is rejected rather than stored.
 
-## Production inference target
+## Project status
 
-The production model target is `unsloth/Qwen3.6-27B-NVFP4`, served with vLLM on Modal. The first
-deployment target remains one L4 container with scale-to-zero behavior and a maximum of one
-container. Production must set `INFERENCE_PROVIDER=modal`; it must never fall back silently to the
-mock provider.
+**Pre-release. Not production ready, and not safe to expose publicly.** This repository is an
+engineered foundation with verified contracts, not a finished application. The table below is
+the honest state; the [pre-deployment readiness audit](docs/19_PRE_DEPLOYMENT_READINESS.md)
+carries the full register with per-item evidence requirements.
 
-Do not download or run the Qwen checkpoint or vLLM on the local workstation. Model weights belong
-inside the separately deployed Modal container. Uploading a document only streams, hashes, and
-stores it; an upload never starts inference. A later explicit workflow checks cache and budget
-before calling Modal.
+| Component | State |
+| --- | --- |
+| Upload, streaming, SHA-256 hashing, bounded storage | Implemented and tested |
+| Domain models, evidence and depth validation | Implemented and tested |
+| Budget ledger and canonical cache key | Implemented, in-memory only |
+| PostGIS schema and Alembic baseline | Migration verified against PostGIS 17-3.5 in CI |
+| Modal worker declaration (vLLM, one L4, scale-to-zero) | Declared and contract-tested, never deployed |
+| Document pipeline (Docling inventory, figure detection) | Not started |
+| Geology (CRS transforms, borehole geometry) | Not started |
+| Job orchestration and extraction endpoints | Not started |
+| Web application and 3D viewer | Not started |
+| Authentication and authorization | Not present |
 
-## Local setup
+## How it works
 
-Use `INFERENCE_PROVIDER=mock` for local development. The following setup commands require a
-network-capable workstation.
-
-```powershell
-python -m pip install "uv>=0.8,<1"
-uv python install 3.13
-uv sync --python 3.13 --extra dev --extra modal
+```mermaid
+flowchart LR
+  U[Upload PDF / DOCX] --> H[SHA-256 + bounded store]
+  H --> I[CPU document inventory]
+  I --> F[Figure and borehole-log detection]
+  F --> C{Cache hit?}
+  C -- yes --> V[Validated result]
+  C -- no --> B[Budget estimate + explicit authorization]
+  B --> M[Modal L4 · Qwen3.6-27B-NVFP4 · vLLM]
+  M --> P[Schema + evidence validation]
+  P --> V
+  V --> D[(PostGIS)]
+  D --> W[CesiumJS context + Three.js geometry]
 ```
 
-Dependency setup installs Python packages and the Modal client SDK; it does not download model
-weights. After a successful sync in an approved environment, start the local API with the mock
-provider:
+Cost governance is structural, not advisory. An upload never triggers inference. Every GPU call
+must pass a cache lookup, a workload estimate, and a budget reservation first, and the container
+scales to zero with a hard ceiling of one instance.
 
-```powershell
+## Design principles
+
+- **No invented data.** The model may not fabricate coordinates, choose an undocumented CRS,
+  interpolate surfaces, or silently reconcile contradictory evidence. Missing values are `null`.
+- **Provenance or rejection.** Every observation links to a document, page, and region. Records
+  without evidence do not persist.
+- **Native coordinates are authoritative.** Original easting/northing and the source CRS are
+  preserved. Labelling arbitrary coordinates as WGS84 is treated as a defect, not a shortcut.
+- **CPU first.** Text and structured tables are parsed deterministically. The GPU is reserved for
+  genuinely visual work such as borehole log figures and cross-sections.
+- **Fakes cannot reach production.** The deterministic mock provider is available for development
+  and tests, and production startup rejects it outright.
+
+## Quickstart
+
+Requires Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync --extra dev
 uv run uvicorn apps.api.app.main:app --reload
 ```
 
-The local upload route does not invoke the mock provider or Modal automatically.
+This runs the API with the deterministic mock inference provider. No model weights are
+downloaded, and no GPU or paid service is contacted. Upload streams, hashes, and stores a
+document; it never starts inference.
 
-## Local PostGIS integration (later operator gate)
+Optional extras: `--extra document` for the Docling pipeline dependencies, `--extra modal` for
+the Modal client SDK.
 
-The Alembic baseline is the database source of truth. Docker and PostGIS were not run in this
-offline workspace. On an approved workstation where the pinned image already exists, use:
+## Development
 
-```powershell
-docker compose up -d --pull never db
-$env:GEOREPORT3D_RUN_POSTGIS_INTEGRATION='1'
-$env:TEST_DATABASE_URL='postgresql+psycopg://postgres:postgres@localhost:5432/georeport3d_test'
-uv run pytest tests/db/test_migrations.py -q -m integration
-docker compose stop db
+```bash
+uv run ruff check .          # lint
+uv run pytest -q             # full suite, GPU-free
+uv run python -m build       # isolated package build
 ```
 
-The integration test requires both explicit opt-in and a loopback database whose name ends in
-`_test`. It rejects shared or production-looking targets without printing credentials. The named
-volume is retained by `stop`; `docker compose down -v` deletes local database data and must not be
-used without explicit intent. Managed production databases may require a DBA to provision the
-PostGIS extension before application migrations run.
+The PostGIS integration test is opt-in and refuses any target that is not a loopback database
+whose name ends in `_test`:
 
-## Verification commands
-
-Run these commands only after dependency sync succeeds in an approved network-capable environment:
-
-```powershell
-uv run pytest -q
-uv run ruff check .
-uv run python -m build
-uv run python -c "from apps.api.app.main import app; print(app.title, app.version)"
+```bash
+docker compose up -d db
+GEOREPORT3D_RUN_POSTGIS_INTEGRATION=1 \
+TEST_DATABASE_URL='postgresql+psycopg://postgres:postgres@localhost:5432/georeport3d_test' \
+uv run pytest -q -m integration
 ```
 
-The expected API import output is `GeoReport3D API 0.2.0`.
+Alembic is the authoritative schema; `database/schema.sql` is only a labelled review snapshot.
+CI runs every gate above on Python 3.12 and 3.13, plus the migration against a real PostGIS
+service container, on each pull request.
 
-Code-level gate status on 2026-08-28, from a completed dependency sync on Python 3.13.14:
+## Deployment
 
-- `uv.lock` exists and resolves 166 packages; `uv sync --frozen` succeeds.
-- Ruff passes with no findings. `pytest` reports 184 passed and 1 skipped; the single skip is the
-  PostGIS integration test, which stays opt-in behind `GEOREPORT3D_RUN_POSTGIS_INTEGRATION`.
-- The isolated build produces both the sdist and the wheel, and the API import prints
-  `GeoReport3D API 0.2.0`.
-- No model was downloaded or loaded, and no inference, Modal deployment, GPU call, or paid cloud
-  action was attempted. Those remain user-authorized target-environment gates.
+Production inference runs on Modal serverless GPU — one L4 container serving
+`unsloth/Qwen3.6-27B-NVFP4` under vLLM, pinned to an exact revision, scaling to zero with no
+automatic retries. Model weights live inside the Modal container and are never downloaded to a
+workstation or a CI runner.
 
-Use the [Modal deployment guide](deployment/README.md) only for a later user-run deployment in an
-approved environment. The [pre-deployment readiness audit](docs/19_PRE_DEPLOYMENT_READINESS.md)
-classifies intentional fakes, stale artifacts, unwired scaffolds, and the evidence required before
-deployment.
+Deployment is manual, gated behind a reviewer approval environment, and never triggered by a
+pull request. See the [Modal deployment guide](deployment/README.md) for the operator runbook,
+cost boundaries, and the evidence required before and after a deploy.
 
-## Start here
+## Documentation
 
-Read:
+| Document | Contents |
+| --- | --- |
+| [Executive overview](docs/00_EXECUTIVE_OVERVIEW.md) | Problem, product shape, and scope |
+| [System architecture](docs/02_SYSTEM_ARCHITECTURE.md) | Services, boundaries, and data flow |
+| [AI pipeline](docs/04_AI_PIPELINE.md) | Model strategy, routing, prompt requirements, caching |
+| [Data contract](docs/05_DATA_CONTRACT.md) | Extraction schema and provenance rules |
+| [Modelling and uncertainty](docs/08_GEOTECHNICAL_MODELING_AND_UNCERTAINTY.md) | Observed vs inferred geology |
+| [Geospatial and 3D viewer](docs/09_GEOSPATIAL_AND_3D_VIEWER.md) | CesiumJS and Three.js responsibilities |
+| [API and job state](docs/10_API_AND_JOB_STATE.md) | Endpoints and the job state machine |
+| [Security and data policy](docs/11_SECURITY_AND_DATA_POLICY.md) | Handling confidential reports |
+| [Readiness register](docs/19_PRE_DEPLOYMENT_READINESS.md) | Per-item deployment evidence |
 
-1. `docs/00_EXECUTIVE_OVERVIEW.md`
-2. `docs/03_IMPLEMENTATION_PLAN.md`
-3. `docs/14_CODER_AGENT_INSTRUCTIONS.md`
-4. `docs/16_MVP_VERTICAL_SLICE.md`
-5. `docs/19_PRE_DEPLOYMENT_READINESS.md`
-6. `deployment/README.md`
+## Contributing
 
-## Cost target
+Contributions are welcome. Every pull request must keep the CI gates green: Ruff, the full test
+suite on both supported Python versions, the isolated build, the API import, and the PostGIS
+migration.
 
-The hard experimental budget is `$230`. The default policy keeps a reserve and blocks uncontrolled
-GPU usage.
+Two rules are non-negotiable in review. Extraction code must never produce a coordinate, CRS, or
+geological contact that is not traceable to source evidence. Generated artifacts, credentials,
+uploaded documents, model weights, and provider logs must never be committed.
 
-## Important limitation
+## License
 
-This repository is a foundation, not a finished production application. The document inventory,
-database integration, production Modal deployment, and 3D viewer still require their dedicated
-implementation and verification steps.
+Apache License 2.0 — see [LICENSE](LICENSE).
