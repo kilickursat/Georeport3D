@@ -26,7 +26,7 @@ class Evidence(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def ordered_bbox(self) -> "Evidence":
+    def ordered_bbox(self) -> Evidence:
         if self.bbox is not None and (
             self.bbox[2] < self.bbox[0] or self.bbox[3] < self.bbox[1]
         ):
@@ -41,7 +41,7 @@ class Collar(BaseModel):
     crs: str | None = None
 
     @model_validator(mode="after")
-    def paired_xy(self) -> "Collar":
+    def paired_xy(self) -> Collar:
         if (self.easting is None) != (self.northing is None):
             raise ValueError("easting and northing must both be present or both be absent")
         return self
@@ -58,7 +58,7 @@ class BoreholeInterval(BaseModel):
     evidence: list[Evidence] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def depth_order(self) -> "BoreholeInterval":
+    def depth_order(self) -> BoreholeInterval:
         if self.depth_to < self.depth_from:
             raise ValueError("depth_to must be >= depth_from")
         return self

@@ -68,7 +68,7 @@ class CloseFailingOutput:
         self._output = output
         self._error = error
 
-    def __enter__(self) -> "CloseFailingOutput":
+    def __enter__(self) -> CloseFailingOutput:
         return self
 
     def __exit__(self, *args: object) -> None:

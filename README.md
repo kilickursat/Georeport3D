@@ -46,9 +46,8 @@ before calling Modal.
 
 ## Local setup
 
-Use `INFERENCE_PROVIDER=mock` for local development. The following setup commands require an
-approved network-capable workstation. They have not completed in this firewall-restricted
-workspace, and the firewall must not be bypassed.
+Use `INFERENCE_PROVIDER=mock` for local development. The following setup commands require a
+network-capable workstation.
 
 ```powershell
 python -m pip install "uv>=0.8,<1"
@@ -98,14 +97,15 @@ uv run python -c "from apps.api.app.main import app; print(app.title, app.versio
 
 The expected API import output is `GeoReport3D API 0.2.0`.
 
-Current offline status on 2026-08-27:
+Code-level gate status on 2026-08-28, from a completed dependency sync on Python 3.13.14:
 
-- Recorded source and direct Python 3.13 checks cover the core/API foundation and the code-level
-  Modal worker/provider boundary where dependencies were available.
-- Lock creation, full dependency sync, pytest, Ruff, the isolated build gate, and the FastAPI import
-  remain deferred because their required packages are unavailable in this offline workspace.
-- No model was downloaded or loaded, and no inference, Modal deployment, GPU call, FastAPI Cloud
-  action, or remote CI job was attempted.
+- `uv.lock` exists and resolves 166 packages; `uv sync --frozen` succeeds.
+- Ruff passes with no findings. `pytest` reports 184 passed and 1 skipped; the single skip is the
+  PostGIS integration test, which stays opt-in behind `GEOREPORT3D_RUN_POSTGIS_INTEGRATION`.
+- The isolated build produces both the sdist and the wheel, and the API import prints
+  `GeoReport3D API 0.2.0`.
+- No model was downloaded or loaded, and no inference, Modal deployment, GPU call, or paid cloud
+  action was attempted. Those remain user-authorized target-environment gates.
 
 Use the [Modal deployment guide](deployment/README.md) only for a later user-run deployment in an
 approved environment. The [pre-deployment readiness audit](docs/19_PRE_DEPLOYMENT_READINESS.md)
