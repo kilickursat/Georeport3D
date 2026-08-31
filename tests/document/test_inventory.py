@@ -47,15 +47,28 @@ def test_classification_reaches_the_candidate() -> None:
     log = inventory.candidates("borehole_log")
 
     assert [figure.figure_id for figure in log] == ["p0001-f000"]
-    assert log[0].matched_terms == ("borehole log",)
+    # Terms are reported in their folded form. "bore log" is the vocabulary entry
+    # that matched, and it is what covers "boring log", "borehole log", and
+    # "drillhole log" alike, so it says more to a reviewer than the raw substring.
+    assert log[0].matched_terms == ("bore log",)
     assert log[0].score > 0.0
 
 
-def test_page_text_routes_a_figure_without_its_own_caption() -> None:
+def test_page_text_does_not_route_a_figure_without_its_own_caption() -> None:
+    # Page 146 discusses a cross section; the uncaptioned figure on it is not
+    # thereby a cross section. This is the false positive that produced nineteen
+    # wrong `borehole_log` regions on a real report.
     inventory = build_inventory("doc-1", "abc", _document())
-    section = inventory.candidates("section")
 
-    assert [figure.page_number for figure in section] == [146]
+    assert inventory.candidates("section") == []
+
+
+def test_a_page_text_lead_survives_as_a_hint() -> None:
+    inventory = build_inventory("doc-1", "abc", _document())
+    uncaptioned = [f for f in inventory.candidates() if f.page_number == 146]
+
+    assert uncaptioned[0].hint_type == "section"
+    assert uncaptioned[0].source_type == "figure"
 
 
 def test_candidates_without_a_filter_returns_everything() -> None:
