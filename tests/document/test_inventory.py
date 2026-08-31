@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import math
+
+import pytest
+
 from document.base import ParsedDocument, ParsedFigure, ParsedPage
 from document.classify import PREPROCESS_VERSION
-from document.inventory import build_inventory
+from document.inventory import FigureCandidate, build_inventory
 
 
 def _document() -> ParsedDocument:
@@ -116,7 +120,13 @@ def test_empty_document_produces_an_empty_inventory() -> None:
 def test_synthetic_pagination_is_carried_into_the_inventory() -> None:
     parsed = ParsedDocument(
         source_format="docx",
-        pages=(ParsedPage(page_number=1, text="Borehole log BH-07"),),
+        pages=(
+            ParsedPage(
+                page_number=1,
+                text="Borehole log BH-07",
+                has_source_pagination=False,
+            ),
+        ),
         has_source_pagination=False,
     )
 
@@ -124,7 +134,48 @@ def test_synthetic_pagination_is_carried_into_the_inventory() -> None:
 
     assert inventory.has_source_pagination is False
     assert inventory.page_count == 1
+    assert inventory.pages[0].has_source_pagination is False
 
 
 def test_pdf_inventory_reports_real_pagination() -> None:
     assert build_inventory("doc-1", "abc", _document()).has_source_pagination is True
+
+
+def test_mixed_pagination_keeps_real_evidence_and_rejects_synthetic_page_evidence() -> None:
+    parsed = ParsedDocument(
+        source_format="pdf",
+        pages=(
+            ParsedPage(
+                page_number=1,
+                figures=(ParsedFigure(page_number=1, kind="figure", caption="Site plan"),),
+            ),
+            ParsedPage(
+                page_number=2,
+                figures=(
+                    ParsedFigure(page_number=2, kind="figure", caption="Unplaced appendix"),
+                ),
+                has_source_pagination=False,
+            ),
+        ),
+        has_source_pagination=False,
+    )
+
+    inventory = build_inventory("doc-1", "abc", parsed)
+
+    assert [page.has_source_pagination for page in inventory.pages] == [True, False]
+    assert inventory.has_source_pagination is False
+    assert inventory.evidence_for(inventory.pages[0].figures[0]).page_number == 1
+    with pytest.raises(ValueError, match="synthetic"):
+        inventory.evidence_for(inventory.pages[1].figures[0])
+
+
+@pytest.mark.parametrize("non_finite", [math.nan, math.inf, -math.inf])
+def test_candidate_bbox_must_be_finite(non_finite: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        FigureCandidate(
+            figure_id="p0001-f000",
+            page_number=1,
+            source_type="figure",
+            score=0.0,
+            bbox=(non_finite, 0.0, non_finite, 1.0),
+        )
