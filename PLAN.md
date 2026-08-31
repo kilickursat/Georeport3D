@@ -91,9 +91,27 @@ of our own is published there.
      job with its original reservation.
    - Follow-up: the borehole geometry column stays null until an SRID can be resolved
      deterministically from the document, which is step 10.
-7. ⬜ **Durable cache and job controller** — Replace the in-memory budget ledger and
-   key-only cache (C-10, C-11) with persistent, idempotent storage enforcing
-   `cache → estimate → reserve → infer → validate → persist → reconcile`.
+7. ✅ **Durable cache and job controller** — Budget admission and the result cache are
+   now durable, and the ordered pipeline is enforced by a state machine (C-10, C-11).
+   - Output: `georeport3d/services/job_state.py`, `georeport3d/services/controller.py`,
+     `BudgetRepository` in `georeport3d/db/repositories.py`,
+     `tests/services/test_job_state.py`, `tests/db/test_controller.py`
+   - 22 new tests. `postgis` job green at `23 passed, 1 skipped, 243 deselected`.
+   - The ledger keeps its role as the GPU rate calculator; it is no longer the
+     accountant. Spend and reservations previously lived in process memory, so a
+     restart reset recorded spend to zero and freed the whole budget again.
+   - Ordering is structural: `GPU_RUNNING` is unreachable except through
+     `CACHE_LOOKUP` and `GPU_AUTHORIZED`, so no caller can shortcut to spending. A
+     cache hit settles without authorising a GPU, proven with a provider that fails
+     if called. A refused job holds no reservation.
+   - A result failing schema validation is never cached and never returned. A failed
+     attempt still records its spend, since a GPU that ran consumed time.
+   - Fixed: `InferenceJobRepository.create` defaulted to `PENDING`, a state absent
+     from `docs/10` and unenforced by the column, so jobs were created in a state the
+     machine cannot advance out of.
+   - Follow-up: not wired to any route yet (step 8). `model_revision` still comes
+     from settings rather than from what the container serves, so the step 3
+     follow-up remains open.
 8. ⬜ **Job and extraction endpoints** — Implement the inventory, estimate, analyze,
    status, cancel, extraction, borehole, section, and page routes from
    `docs/10_API_AND_JOB_STATE.md` (C-13) with idempotency keys, timeouts, and stable
