@@ -18,6 +18,7 @@ hand-written schema.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -398,6 +399,47 @@ class UsageRepository:
         """Spend recorded so far, for reconciliation against the budget ledger."""
         total = self._session.scalar(select(func.coalesce(func.sum(UsageRecord.actual_usd), 0)))
         return Decimal(total or 0)
+
+
+@dataclass(frozen=True)
+class BudgetPosition:
+    """What the database says is committed, independent of any process's memory."""
+
+    reserved_usd: Decimal
+    settled_usd: Decimal
+
+    @property
+    def committed_usd(self) -> Decimal:
+        return self.reserved_usd + self.settled_usd
+
+
+class BudgetRepository:
+    """Budget accounting derived from durable job and usage rows.
+
+    A reservation counts while its job is still live. Once the job reaches a
+    terminal state the reservation stops counting and only the measured spend in
+    `usage_records` remains, so a finished job is never charged twice.
+
+    Terminal states are passed in rather than imported, so this layer does not
+    depend on the service that owns the state machine.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def position(self, terminal_states: Collection[str]) -> BudgetPosition:
+        reserved = self._session.scalar(
+            select(func.coalesce(func.sum(InferenceJob.reserved_usd), 0)).where(
+                InferenceJob.state.notin_(list(terminal_states))
+            )
+        )
+        settled = self._session.scalar(
+            select(func.coalesce(func.sum(UsageRecord.actual_usd), 0))
+        )
+        return BudgetPosition(
+            reserved_usd=Decimal(reserved or 0),
+            settled_usd=Decimal(settled or 0),
+        )
 
 
 class CacheRepository:
