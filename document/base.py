@@ -15,6 +15,13 @@ from typing import Literal, Protocol
 SourceFormat = Literal["pdf", "docx"]
 FigureKind = Literal["figure", "table"]
 
+# How a region came to exist. `detected` means the layout model located it and its
+# bbox marks a real feature. `page_fallback` means no region was detected on a page
+# that clearly carries one - a full-page engineering drawing - so the page itself is
+# offered as the region. Its bbox is the page, so a citation built from it must not
+# be presented as pointing at a located feature.
+RegionOrigin = Literal["detected", "page_fallback"]
+
 
 class DocumentParseError(RuntimeError):
     """Generic parse failure that never carries document content or paths."""
@@ -36,6 +43,7 @@ class ParsedFigure:
     kind: FigureKind
     bbox: tuple[float, float, float, float] | None = None
     caption: str | None = None
+    origin: RegionOrigin = "detected"
 
     def __post_init__(self) -> None:
         if self.page_number < 1:

@@ -60,13 +60,16 @@ def test_real_backend_produces_a_cited_inventory(report: Path) -> None:
         assert evidence.page_number in page_numbers
 
 
-def test_real_backend_routes_the_borehole_log_text(report: Path) -> None:
+def test_real_backend_does_not_route_on_page_text_alone(report: Path) -> None:
     parsed = DoclingDocumentParser().parse(report)
     inventory = build_inventory("doc-real", "sha-real", parsed)
 
-    # The heading text names a borehole log, so any region on that page is routed
-    # there rather than being left as a generic table.
-    assert inventory.candidates("borehole_log") or not inventory.candidates()
+    # The page names a borehole log in its text, but no region on it carries a
+    # caption saying so. Page prose describes a page, not a region: routing on it
+    # mislabelled every one of nineteen regions on a real baseline report.
+    for figure in inventory.candidates():
+        if not figure.matched_terms:
+            assert figure.source_type in ("figure", "table")
 
 
 def _build_pdf(pages: list[list[tuple[int, int, int, str]]]) -> bytes:
