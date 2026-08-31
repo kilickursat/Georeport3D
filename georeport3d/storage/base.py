@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import BinaryIO, Literal, Protocol
 
 
+class LegacyDocumentFormatError(RuntimeError):
+    """A legacy stored document has no durable, trusted source format."""
+
+
 @dataclass(frozen=True)
 class DocumentReceipt:
     """Metadata returned after a document has been durably published."""
