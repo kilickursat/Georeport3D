@@ -315,7 +315,10 @@ class InferenceJobRepository:
         estimated_usd: float | Decimal,
         reserved_usd: float | Decimal,
         model_revision: str | None = None,
-        state: str = "PENDING",
+        # QUEUED is the documented entry state. The column is a plain string with no
+        # enum constraint, so an undocumented default here would silently create jobs
+        # the state machine cannot advance.
+        state: str = "QUEUED",
     ) -> tuple[InferenceJob, bool]:
         """Return the job and whether this call created it.
 
