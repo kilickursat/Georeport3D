@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from decimal import Decimal
 from threading import Event, Lock
-from typing import Callable
 from uuid import UUID, uuid4
 
 import pytest
@@ -22,6 +22,7 @@ from georeport3d.config import (
     Policy,
     Settings,
 )
+from georeport3d.db.models import UsageRecord
 from georeport3d.db.repositories import (
     BudgetRepository,
     CacheRepository,
@@ -29,7 +30,6 @@ from georeport3d.db.repositories import (
     InferenceJobRepository,
     ProjectRepository,
 )
-from georeport3d.db.models import UsageRecord
 from georeport3d.db.session import unit_of_work
 from georeport3d.inference.base import (
     InferenceFailure,
