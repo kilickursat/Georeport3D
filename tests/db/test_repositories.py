@@ -303,3 +303,41 @@ def test_failed_transaction_persists_nothing(session_factory: sessionmaker[Sessi
             ).scalar_one()
             == 0
         )
+
+
+def test_budget_position_counts_live_reservations_and_settled_spend(
+    session_factory: sessionmaker[Session],
+) -> None:
+    from georeport3d.db.repositories import BudgetRepository
+    from georeport3d.services.job_state import TERMINAL_STATES
+
+    with unit_of_work(session_factory) as session:
+        _, document = _project_and_document(session)
+        jobs = InferenceJobRepository(session)
+        budget = BudgetRepository(session)
+        before = budget.position(TERMINAL_STATES)
+
+        live, _ = jobs.create(
+            document_id=document.id,
+            idempotency_key=f"key-{uuid4()}",
+            provider="modal",
+            model_id="m",
+            prompt_version="v1",
+            preprocess_version="v1",
+            estimated_usd=2,
+            reserved_usd=2,
+            state="GPU_RUNNING",
+        )
+
+        after_reserve = budget.position(TERMINAL_STATES)
+        assert after_reserve.reserved_usd - before.reserved_usd == Decimal("2.000000")
+
+        # Settling the job releases the reservation and leaves only measured spend,
+        # so a finished job is never charged twice.
+        jobs.set_state(live.id, "COMPLETED")
+        UsageRepository(session).record(live.id, "L4", actual_seconds=10, actual_usd=0.5)
+
+        settled = budget.position(TERMINAL_STATES)
+        assert settled.reserved_usd == before.reserved_usd
+        assert settled.settled_usd - before.settled_usd == Decimal("0.500000")
+        assert settled.committed_usd - before.committed_usd == Decimal("0.500000")
