@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
@@ -91,6 +93,53 @@ def test_same_bytes_resolve_to_one_document(session_factory: sessionmaker[Sessio
         assert created_first is True
         assert created_second is False
         assert first.id == second.id
+
+
+def test_document_repository_accepts_storage_receipt_uuid(
+    session_factory: sessionmaker[Session],
+) -> None:
+    supplied_id = uuid4()
+    with unit_of_work(session_factory) as session:
+        project = ProjectRepository(session).create(name=f"project-{uuid4()}")
+        document, created = DocumentRepository(session).add(
+            project.id,
+            "report.pdf",
+            "b" * 64,
+            10,
+            document_id=supplied_id,
+        )
+
+        assert created is True
+        assert document.id == supplied_id
+
+
+def test_concurrent_same_bytes_resolve_to_one_document(
+    session_factory: sessionmaker[Session],
+) -> None:
+    with unit_of_work(session_factory) as session:
+        project = ProjectRepository(session).create(name=f"project-{uuid4()}")
+        project_id = project.id
+
+    barrier = Barrier(2)
+    digest = uuid4().hex * 2
+
+    def add_document(document_id) -> tuple[str, bool]:
+        barrier.wait()
+        with unit_of_work(session_factory) as session:
+            document, created = DocumentRepository(session).add(
+                project_id,
+                "report.pdf",
+                digest,
+                10,
+                document_id=document_id,
+            )
+            return str(document.id), created
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(add_document, (uuid4(), uuid4())))
+
+    assert sum(created for _, created in results) == 1
+    assert len({document_id for document_id, _ in results}) == 1
 
 
 def test_extraction_persists_boreholes_intervals_and_evidence(

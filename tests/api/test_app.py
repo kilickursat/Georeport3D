@@ -122,3 +122,16 @@ def test_dependency_builders_use_settings(tmp_path) -> None:
         "notes": [],
         "extraction_confidence": 0.0,
     }
+
+
+def test_persistent_routes_fail_closed_without_database(client: TestClient) -> None:
+    response = client.post("/projects", json={"name": "Example"})
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": {"code": "PERSISTENCE_UNAVAILABLE"}}
+
+
+def test_storage_only_upload_is_marked_deprecated(client: TestClient) -> None:
+    operation = client.get("/openapi.json").json()["paths"]["/documents/upload"]["post"]
+
+    assert operation["deprecated"] is True
