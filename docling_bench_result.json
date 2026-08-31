@@ -1,0 +1,569 @@
+{
+  "sha256": "b40d2473e54da9a646aa956f5b2fc96f2bb2ff0f896f24f74f88274e1c58e68a",
+  "runs": 3,
+  "seconds_per_run": [
+    274.4,
+    253.2,
+    243.4
+  ],
+  "n_pages": 105,
+  "deterministic": true,
+  "n_diffs": 0,
+  "diffs": [],
+  "pages_with_no_text": [],
+  "pages_with_thin_text": [
+    67,
+    78,
+    92
+  ],
+  "total_regions": 148,
+  "routing": {
+    "figure": 118,
+    "map": 1,
+    "table": 29
+  },
+  "origins": {
+    "detected": 138,
+    "page_fallback": 10
+  },
+  "regions_with_hints": 70,
+  "routed_non_default": [
+    {
+      "page": 79,
+      "type": "map",
+      "score": 0.9,
+      "terms": [
+        "location plan"
+      ],
+      "origin": "detected",
+      "caption": "FIGURE 2 - 1. DART D2 PROJECT LOCATION PLAN"
+    }
+  ],
+  "per_page": [
+    {
+      "page": 1,
+      "chars": 268,
+      "regions": 2
+    },
+    {
+      "page": 2,
+      "chars": 1414,
+      "regions": 7
+    },
+    {
+      "page": 3,
+      "chars": 4832,
+      "regions": 2
+    },
+    {
+      "page": 4,
+      "chars": 4712,
+      "regions": 2
+    },
+    {
+      "page": 5,
+      "chars": 4047,
+      "regions": 2
+    },
+    {
+      "page": 6,
+      "chars": 642,
+      "regions": 2
+    },
+    {
+      "page": 7,
+      "chars": 2559,
+      "regions": 1
+    },
+    {
+      "page": 8,
+      "chars": 2581,
+      "regions": 1
+    },
+    {
+      "page": 9,
+      "chars": 3098,
+      "regions": 1
+    },
+    {
+      "page": 10,
+      "chars": 3129,
+      "regions": 1
+    },
+    {
+      "page": 11,
+      "chars": 2300,
+      "regions": 1
+    },
+    {
+      "page": 12,
+      "chars": 2325,
+      "regions": 1
+    },
+    {
+      "page": 13,
+      "chars": 3102,
+      "regions": 1
+    },
+    {
+      "page": 14,
+      "chars": 2675,
+      "regions": 1
+    },
+    {
+      "page": 15,
+      "chars": 2810,
+      "regions": 1
+    },
+    {
+      "page": 16,
+      "chars": 3365,
+      "regions": 1
+    },
+    {
+      "page": 17,
+      "chars": 2643,
+      "regions": 1
+    },
+    {
+      "page": 18,
+      "chars": 2645,
+      "regions": 1
+    },
+    {
+      "page": 19,
+      "chars": 2756,
+      "regions": 1
+    },
+    {
+      "page": 20,
+      "chars": 3182,
+      "regions": 1
+    },
+    {
+      "page": 21,
+      "chars": 3189,
+      "regions": 1
+    },
+    {
+      "page": 22,
+      "chars": 2922,
+      "regions": 1
+    },
+    {
+      "page": 23,
+      "chars": 3170,
+      "regions": 1
+    },
+    {
+      "page": 24,
+      "chars": 2826,
+      "regions": 1
+    },
+    {
+      "page": 25,
+      "chars": 2425,
+      "regions": 1
+    },
+    {
+      "page": 26,
+      "chars": 2351,
+      "regions": 1
+    },
+    {
+      "page": 27,
+      "chars": 3156,
+      "regions": 1
+    },
+    {
+      "page": 28,
+      "chars": 2771,
+      "regions": 1
+    },
+    {
+      "page": 29,
+      "chars": 2951,
+      "regions": 1
+    },
+    {
+      "page": 30,
+      "chars": 3178,
+      "regions": 1
+    },
+    {
+      "page": 31,
+      "chars": 3636,
+      "regions": 1
+    },
+    {
+      "page": 32,
+      "chars": 2692,
+      "regions": 1
+    },
+    {
+      "page": 33,
+      "chars": 3268,
+      "regions": 1
+    },
+    {
+      "page": 34,
+      "chars": 2662,
+      "regions": 1
+    },
+    {
+      "page": 35,
+      "chars": 3080,
+      "regions": 1
+    },
+    {
+      "page": 36,
+      "chars": 2968,
+      "regions": 1
+    },
+    {
+      "page": 37,
+      "chars": 2948,
+      "regions": 1
+    },
+    {
+      "page": 38,
+      "chars": 3102,
+      "regions": 1
+    },
+    {
+      "page": 39,
+      "chars": 2716,
+      "regions": 1
+    },
+    {
+      "page": 40,
+      "chars": 2993,
+      "regions": 1
+    },
+    {
+      "page": 41,
+      "chars": 3149,
+      "regions": 1
+    },
+    {
+      "page": 42,
+      "chars": 2731,
+      "regions": 1
+    },
+    {
+      "page": 43,
+      "chars": 3019,
+      "regions": 1
+    },
+    {
+      "page": 44,
+      "chars": 2873,
+      "regions": 1
+    },
+    {
+      "page": 45,
+      "chars": 3094,
+      "regions": 1
+    },
+    {
+      "page": 46,
+      "chars": 3316,
+      "regions": 1
+    },
+    {
+      "page": 47,
+      "chars": 3179,
+      "regions": 1
+    },
+    {
+      "page": 48,
+      "chars": 2875,
+      "regions": 1
+    },
+    {
+      "page": 49,
+      "chars": 3157,
+      "regions": 1
+    },
+    {
+      "page": 50,
+      "chars": 3268,
+      "regions": 1
+    },
+    {
+      "page": 51,
+      "chars": 2484,
+      "regions": 1
+    },
+    {
+      "page": 52,
+      "chars": 3185,
+      "regions": 1
+    },
+    {
+      "page": 53,
+      "chars": 3066,
+      "regions": 1
+    },
+    {
+      "page": 54,
+      "chars": 2591,
+      "regions": 1
+    },
+    {
+      "page": 55,
+      "chars": 2989,
+      "regions": 1
+    },
+    {
+      "page": 56,
+      "chars": 2205,
+      "regions": 1
+    },
+    {
+      "page": 57,
+      "chars": 2669,
+      "regions": 1
+    },
+    {
+      "page": 58,
+      "chars": 2433,
+      "regions": 1
+    },
+    {
+      "page": 59,
+      "chars": 2691,
+      "regions": 1
+    },
+    {
+      "page": 60,
+      "chars": 2897,
+      "regions": 1
+    },
+    {
+      "page": 61,
+      "chars": 2856,
+      "regions": 1
+    },
+    {
+      "page": 62,
+      "chars": 2382,
+      "regions": 2
+    },
+    {
+      "page": 63,
+      "chars": 1719,
+      "regions": 3
+    },
+    {
+      "page": 64,
+      "chars": 2143,
+      "regions": 2
+    },
+    {
+      "page": 65,
+      "chars": 2199,
+      "regions": 2
+    },
+    {
+      "page": 66,
+      "chars": 169,
+      "regions": 1
+    },
+    {
+      "page": 67,
+      "chars": 55,
+      "regions": 1
+    },
+    {
+      "page": 68,
+      "chars": 1392,
+      "regions": 1
+    },
+    {
+      "page": 69,
+      "chars": 1121,
+      "regions": 1
+    },
+    {
+      "page": 70,
+      "chars": 1493,
+      "regions": 1
+    },
+    {
+      "page": 71,
+      "chars": 4079,
+      "regions": 1
+    },
+    {
+      "page": 72,
+      "chars": 1478,
+      "regions": 3
+    },
+    {
+      "page": 73,
+      "chars": 2885,
+      "regions": 1
+    },
+    {
+      "page": 74,
+      "chars": 2893,
+      "regions": 1
+    },
+    {
+      "page": 75,
+      "chars": 1239,
+      "regions": 1
+    },
+    {
+      "page": 76,
+      "chars": 2381,
+      "regions": 2
+    },
+    {
+      "page": 77,
+      "chars": 815,
+      "regions": 1
+    },
+    {
+      "page": 78,
+      "chars": 56,
+      "regions": 1
+    },
+    {
+      "page": 79,
+      "chars": 1099,
+      "regions": 1
+    },
+    {
+      "page": 80,
+      "chars": 1448,
+      "regions": 1
+    },
+    {
+      "page": 81,
+      "chars": 3547,
+      "regions": 23
+    },
+    {
+      "page": 82,
+      "chars": 1480,
+      "regions": 1
+    },
+    {
+      "page": 83,
+      "chars": 1292,
+      "regions": 1
+    },
+    {
+      "page": 84,
+      "chars": 1845,
+      "regions": 1
+    },
+    {
+      "page": 85,
+      "chars": 1702,
+      "regions": 1
+    },
+    {
+      "page": 86,
+      "chars": 1821,
+      "regions": 1
+    },
+    {
+      "page": 87,
+      "chars": 1491,
+      "regions": 1
+    },
+    {
+      "page": 88,
+      "chars": 1842,
+      "regions": 1
+    },
+    {
+      "page": 89,
+      "chars": 1872,
+      "regions": 1
+    },
+    {
+      "page": 90,
+      "chars": 1776,
+      "regions": 1
+    },
+    {
+      "page": 91,
+      "chars": 1287,
+      "regions": 1
+    },
+    {
+      "page": 92,
+      "chars": 86,
+      "regions": 1
+    },
+    {
+      "page": 93,
+      "chars": 235,
+      "regions": 1
+    },
+    {
+      "page": 94,
+      "chars": 223,
+      "regions": 1
+    },
+    {
+      "page": 95,
+      "chars": 298,
+      "regions": 1
+    },
+    {
+      "page": 96,
+      "chars": 284,
+      "regions": 1
+    },
+    {
+      "page": 97,
+      "chars": 337,
+      "regions": 1
+    },
+    {
+      "page": 98,
+      "chars": 311,
+      "regions": 1
+    },
+    {
+      "page": 99,
+      "chars": 298,
+      "regions": 1
+    },
+    {
+      "page": 100,
+      "chars": 227,
+      "regions": 1
+    },
+    {
+      "page": 101,
+      "chars": 185,
+      "regions": 1
+    },
+    {
+      "page": 102,
+      "chars": 251,
+      "regions": 1
+    },
+    {
+      "page": 103,
+      "chars": 229,
+      "regions": 1
+    },
+    {
+      "page": 104,
+      "chars": 200,
+      "regions": 1
+    },
+    {
+      "page": 105,
+      "chars": 381,
+      "regions": 3
+    }
+  ]
+}

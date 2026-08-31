@@ -16,7 +16,6 @@ from tempfile import TemporaryDirectory
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 
-
 if __name__ == "__main__":
     _repository_root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(_repository_root))
@@ -125,9 +124,11 @@ class UploadToParserBoundaryTests(unittest.TestCase):
                 self.assertEqual(stored_path.suffix, expected_suffix)
 
                 converter = _RecordingConverter()
-                parsed = DoclingDocumentParser(converter_factory=lambda: converter).parse(
-                    stored_path
-                )
+                # Bound as a default argument so the factory closes over this
+                # iteration's converter rather than the loop variable (ruff B023).
+                parsed = DoclingDocumentParser(
+                    converter_factory=lambda converter=converter: converter
+                ).parse(stored_path)
 
                 self.assertEqual(converter.received, [stored_path])
                 self.assertEqual(parsed.source_format, expected_format)
