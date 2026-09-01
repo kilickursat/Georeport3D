@@ -431,7 +431,13 @@ def test_a_failed_attempt_still_records_its_spend(
             error=InferenceFailure(code="INVALID_MODEL_JSON", message="bad json"),
         )
     )
-    controller = _controller(session_factory, provider)
+    # The clock is stated rather than measured. Now that usage records the real
+    # elapsed interval, a fake provider that returns in microseconds genuinely costs
+    # less than the sixth decimal place the column stores, so measured spend would
+    # round to zero and this test could not see the record it exists to check.
+    controller = _controller(
+        session_factory, provider, monotonic=_SequenceClock(0.0, 30.0)
+    )
     with unit_of_work(session_factory) as session:
         before = BudgetRepository(session).position(TERMINAL_STATES)
 

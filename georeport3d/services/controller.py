@@ -84,6 +84,9 @@ class JobOutcome:
         return self.state == "COMPLETED"
 
 
+_SECONDS_PER_HOUR = Decimal(3600)
+
+
 def _decimal(value: float | int | Decimal) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
@@ -127,9 +130,20 @@ class JobController:
             )
         )
 
+    def price_usd(self, seconds: float) -> Decimal:
+        """Price a duration at the profile's rate, in exact decimal arithmetic.
+
+        Deliberately not `BudgetLedger.estimate`, which returns a float. Binary
+        floating point turns 4.25 seconds at $0.7992/hour into
+        0.0009435000000000001 instead of 0.0009435, and that error then travels into
+        a Numeric column, a comparison against a budget ceiling, and a sum over every
+        job. The profile still owns the rate; only the arithmetic moves.
+        """
+        return _decimal(seconds) * _decimal(self._profile.usd_per_hour) / _SECONDS_PER_HOUR
+
     def estimate_usd(self, estimated_seconds: float) -> Decimal:
-        """Price an estimate using the ledger's rate, carried as an exact decimal."""
-        return _decimal(self._ledger.estimate(estimated_seconds, self._profile))
+        """Price an estimate, carried as an exact decimal."""
+        return self.price_usd(estimated_seconds)
 
     # -- admission ------------------------------------------------------------
 
@@ -451,7 +465,7 @@ class JobController:
                 job_id, "VALIDATING", "DOCUMENT_PROVENANCE_MISMATCH", estimate, elapsed_seconds
             )
 
-        actual_usd = _decimal(self._ledger.estimate(elapsed_seconds, self._profile))
+        actual_usd = self.price_usd(elapsed_seconds)
         with unit_of_work(self._sessions) as session:
             jobs = InferenceJobRepository(session)
             validate_transition("VALIDATING", "PERSISTING")
@@ -510,7 +524,7 @@ class JobController:
         first lets the same budget be spent twice; skipping the second leaves a
         reservation counted against the budget forever.
         """
-        actual_usd = _decimal(self._ledger.estimate(elapsed_seconds, self._profile))
+        actual_usd = self.price_usd(elapsed_seconds)
         with unit_of_work(self._sessions) as session:
             UsageRepository(session).record(
                 inference_job_id=job_id,
