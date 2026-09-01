@@ -124,7 +124,7 @@ class ModalInferenceProviderTests(unittest.TestCase):
         provider = ModalInferenceProvider(
             "app",
             "QwenWorker",
-            "configured-model",
+            "deployed-model",
             resolver=resolver,
         )
 
@@ -160,7 +160,7 @@ class ModalInferenceProviderTests(unittest.TestCase):
         provider = ModalInferenceProvider(
             "app",
             "QwenWorker",
-            "model",
+            "deployed-model",
             resolver=_Resolver(_FakeWorker(method)),
         )
 
@@ -184,7 +184,7 @@ class ModalInferenceProviderTests(unittest.TestCase):
         provider = ModalInferenceProvider(
             "app",
             "QwenWorker",
-            "configured-model",
+            "authorized-deployed-model",
             resolver=_Resolver(_FakeWorker(_FakeRemoteMethod([response]))),
         )
 
@@ -197,6 +197,21 @@ class ModalInferenceProviderTests(unittest.TestCase):
         self.assertEqual(result.metadata.model_revision, "revision-7")
         self.assertEqual(result.metadata.prompt_version, "prompt-v2")
         self.assertEqual(result.metadata.preprocess_version, "preprocess-v4")
+
+    def test_success_rejects_model_identity_different_from_configuration(self) -> None:
+        response = _success(model_id="unexpected-deployment")
+        provider = ModalInferenceProvider(
+            "app",
+            "QwenWorker",
+            "configured-model",
+            resolver=_Resolver(_FakeWorker(_FakeRemoteMethod([response]))),
+        )
+
+        with self.assertRaisesRegex(
+            InferenceUnavailableError,
+            "^Modal worker returned an invalid response$",
+        ):
+            provider.extract_batch([_request()])
 
     def test_failure_mapping_is_ordered_generic_and_does_not_leak_remote_text(self) -> None:
         codes_and_messages = [
@@ -358,6 +373,7 @@ class ModalInferenceProviderTests(unittest.TestCase):
             {**valid_metadata, "provider": "mock"},
             {**valid_metadata, "model_id": ""},
             {**valid_metadata, "model_id": " "},
+            {**valid_metadata, "model_id": "different-deployment"},
             {**valid_metadata, "model_revision": "different"},
             {**valid_metadata, "prompt_version": "different"},
             {**valid_metadata, "preprocess_version": "different"},
@@ -491,7 +507,7 @@ class ModalInferenceProviderTests(unittest.TestCase):
         provider = ModalInferenceProvider(
             "app",
             "QwenWorker",
-            "model",
+            "deployed-model",
             resolver=_Resolver(_FakeWorker(_FakeRemoteMethod(response))),
         )
         with self.assertRaisesRegex(
