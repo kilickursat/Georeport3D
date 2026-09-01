@@ -16,11 +16,14 @@ from document.render import (
 
 pytestmark = pytest.mark.docling  # shares the optional document extra
 
+# Module level, not only inside the fixture: the tests that build no PDF still reach
+# the renderer, and the normal gates job installs no document extra.
+pdfium = pytest.importorskip("pypdfium2")
+
 
 @pytest.fixture(scope="module")
 def pdf(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A two-page PDF with visible content, built rather than committed."""
-    pdfium = pytest.importorskip("pypdfium2")
     target = tmp_path_factory.mktemp("render") / "sample.pdf"
 
     document = pdfium.PdfDocument.new()
