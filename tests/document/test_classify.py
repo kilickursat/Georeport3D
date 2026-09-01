@@ -29,19 +29,39 @@ def test_page_text_is_kept_as_an_auditable_hint() -> None:
     assert result.matched_terms == ()
 
 
-def test_a_whole_page_region_is_identified_by_its_own_page_text() -> None:
-    # A full-page drawing has no caption and no neighbouring content: the page text
-    # is the sheet's own title block. Measured, this is the only signal the nine
-    # geologic profile sheets carry, and refusing it leaves them unroutable.
+def test_a_whole_page_region_is_a_drawing_sheet_and_its_title_block_only_hints() -> None:
+    # v2 typed this `section` off the page text. The vocabulary had not earned that:
+    # measured over ten real sheets, most matches came from `stationing`, which says
+    # a sheet carries chainages and nothing about what it depicts. The structural
+    # fact - a region that is its whole page - is what routes it, and the terms ride
+    # along as a lead a reviewer can weigh against what the model reads.
     sheet = classify_figure(
         "figure",
         page_text="GENERAL GEOLOGIC PROFILE STA 46+00 TO STA 58+00 LIMESTONE SHALE",
         whole_page=True,
     )
 
-    assert sheet.source_type == "section"
-    assert sheet.matched_terms == ("geologic section",)
-    assert sheet.score > 0.0
+    assert sheet.source_type == "drawing_sheet"
+    assert sheet.hint_type == "section"
+    assert sheet.hints == ("geologic section",)
+    assert sheet.matched_terms == ()
+    assert sheet.score == 0.0
+
+
+def test_a_sheet_whose_words_are_unknown_still_routes_as_a_drawing_sheet() -> None:
+    # The geologic map on p80 and the profile on p89 matched no term at all and were
+    # typed `figure` - which is what an ordinary unidentified figure is typed, so the
+    # gap did not show. A sheet whose title block is only drawing-office metadata is
+    # the same case, and shape routes it without needing a single word recognised.
+    sheet = classify_figure(
+        "figure",
+        page_text="SHEET 12 OF 40   DWG NO C-104   SCALE 1:2000   REV B",
+        whole_page=True,
+    )
+
+    assert sheet.source_type == "drawing_sheet"
+    assert sheet.hint_type is None
+    assert sheet.score == 0.0
 
 
 def test_the_same_text_on_a_normal_region_still_only_hints() -> None:
