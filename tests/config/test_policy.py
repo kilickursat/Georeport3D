@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from georeport3d.config import Policy, Settings, load_policy
+from georeport3d.model_identity import MODEL_ID, MODEL_REVISION
 
 CANONICAL_CACHE_KEY_FIELDS = [
     "document_sha256",
@@ -71,6 +72,41 @@ def test_production_cannot_default_to_mock(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("INFERENCE_PROVIDER", "mock")
     with pytest.raises(ValidationError, match="mock"):
         Settings()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        pytest.param({"model_id": "other/model"}, id="model-id"),
+        pytest.param({"model_revision": "0" * 40}, id="model-revision"),
+    ],
+)
+def test_modal_settings_reject_identity_init_overrides(
+    override: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError, match="source-controlled model identity"):
+        Settings(_env_file=None, inference_provider="modal", **override)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        pytest.param("MODEL_ID", "other/model", id="model-id"),
+        pytest.param("MODEL_REVISION", "0" * 40, id="model-revision"),
+    ],
+)
+def test_modal_settings_reject_identity_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "modal")
+    monkeypatch.setenv("MODEL_ID", MODEL_ID)
+    monkeypatch.setenv("MODEL_REVISION", MODEL_REVISION)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError, match="source-controlled model identity"):
+        Settings(_env_file=None)
 
 
 @pytest.mark.parametrize(
