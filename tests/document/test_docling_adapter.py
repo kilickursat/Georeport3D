@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from document.base import (
+    DocumentPageLimitError,
     DocumentParseError,
     DocumentParserUnavailableError,
     UnsupportedDocumentError,
@@ -153,6 +154,16 @@ def test_top_left_bbox_survives_a_missing_page_height() -> None:
     )
 
 
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_bbox_is_dropped(non_finite: float) -> None:
+    document = _Document(
+        pages={1: _Page(height=800.0)},
+        pictures=[_Region(1, _FakeBBox(non_finite, 20.0, non_finite, 60.0))],
+    )
+
+    assert to_parsed_document("pdf", document).pages[0].figures[0].bbox is None
+
+
 def test_page_text_is_joined_in_document_order() -> None:
     document = _Document(
         pages={1: _Page(height=800.0)},
@@ -173,13 +184,19 @@ def test_tables_and_pictures_are_both_inventoried() -> None:
     assert sorted(kinds) == ["figure", "table"]
 
 
-def test_region_without_a_usable_page_number_is_dropped() -> None:
+def test_regions_without_usable_page_numbers_are_preserved_on_a_synthetic_page() -> None:
     document = _Document(
         pages={1: _Page(height=800.0)},
         pictures=[_Region(None), _Region(0), _Region("2")],
     )
 
-    assert to_parsed_document("pdf", document).pages[0].figures == ()
+    parsed = to_parsed_document("pdf", document)
+
+    assert [page.page_number for page in parsed.pages] == [1, 2]
+    assert parsed.pages[0].figures == ()
+    assert len(parsed.pages[1].figures) == 3
+    assert parsed.pages[1].has_source_pagination is False
+    assert parsed.has_source_pagination is False
 
 
 def test_unreadable_caption_does_not_fail_the_parse() -> None:
@@ -227,16 +244,60 @@ def test_converter_failure_becomes_a_generic_parse_error() -> None:
 
     assert "secret" not in str(excinfo.value)
     assert str(excinfo.value) == "document could not be parsed"
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+
+
+def test_converter_factory_failure_becomes_a_detached_generic_parse_error() -> None:
+    def _boom() -> object:
+        raise RuntimeError("/secret/path/report.pdf failed during construction")
+
+    with pytest.raises(DocumentParseError) as excinfo:
+        DoclingDocumentParser(converter_factory=_boom).parse(Path("/secret/path/report.pdf"))
+
+    assert str(excinfo.value) == "document could not be parsed"
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+
+
+def test_normalization_failure_becomes_a_detached_generic_parse_error() -> None:
+    class _BrokenDocument:
+        @property
+        def pages(self) -> object:
+            raise RuntimeError("/secret/path/report.pdf failed during normalization")
+
+    class _Result:
+        document = _BrokenDocument()
+
+    class _Converter:
+        def convert(self, source: object) -> object:
+            return _Result()
+
+    with pytest.raises(DocumentParseError) as excinfo:
+        DoclingDocumentParser(converter_factory=_Converter).parse(
+            Path("/secret/path/report.pdf")
+        )
+
+    assert str(excinfo.value) == "document could not be parsed"
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
 
 
 def test_unavailable_backend_is_reported_distinctly() -> None:
+    original = DocumentParserUnavailableError("/secret/path/report.pdf backend missing")
+
     def _missing() -> object:
-        raise DocumentParserUnavailableError("document parser is not installed")
+        raise original
 
     parser = DoclingDocumentParser(converter_factory=_missing)
 
-    with pytest.raises(DocumentParserUnavailableError):
+    with pytest.raises(DocumentParserUnavailableError) as excinfo:
         parser.parse(Path("report.pdf"))
+
+    assert excinfo.value is not original
+    assert str(excinfo.value) == "document parser is not installed"
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
 
 
 def test_successful_parse_uses_the_injected_converter() -> None:
@@ -253,6 +314,46 @@ def test_successful_parse_uses_the_injected_converter() -> None:
     assert parsed.pages[0].text == "hello"
 
 
+def test_page_limit_is_enforced_after_normalization() -> None:
+    converted: list[Path] = []
+
+    class _Result:
+        document = _Document(pages={1: _Page(height=800.0), 2: _Page(height=800.0)})
+
+    class _Converter:
+        def convert(self, source: Path) -> object:
+            converted.append(source)
+            return _Result()
+
+    path = Path("report.pdf")
+    with pytest.raises(DocumentPageLimitError, match="page limit") as excinfo:
+        DoclingDocumentParser(converter_factory=_Converter, max_pages=1).parse(path)
+
+    assert converted == [path]
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+
+
+def test_default_page_limit_is_500_normalized_pages() -> None:
+    class _Result:
+        document = _Document(
+            pages={page: _Page(height=800.0) for page in range(1, 502)}
+        )
+
+    class _Converter:
+        def convert(self, source: Path) -> object:
+            return _Result()
+
+    with pytest.raises(DocumentPageLimitError):
+        DoclingDocumentParser(converter_factory=_Converter).parse(Path("report.pdf"))
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, 1.5, "2", None])
+def test_page_limit_must_be_a_positive_non_boolean_integer(invalid: object) -> None:
+    with pytest.raises(ValueError, match="max_pages"):
+        DoclingDocumentParser(max_pages=invalid)  # type: ignore[arg-type]
+
+
 def test_flow_document_without_pages_collapses_to_one_ordinal_page() -> None:
     # DOCX reports no pages and no per-item provenance. Dropping the content would
     # make the whole format unusable; silently claiming "page 1" of the source
@@ -266,6 +367,7 @@ def test_flow_document_without_pages_collapses_to_one_ordinal_page() -> None:
 
     assert parsed.has_source_pagination is False
     assert len(parsed.pages) == 1
+    assert parsed.pages[0].has_source_pagination is False
     assert parsed.pages[0].text == "Borehole log BH-07"
     assert parsed.pages[0].figures[0].kind == "table"
 
@@ -273,7 +375,39 @@ def test_flow_document_without_pages_collapses_to_one_ordinal_page() -> None:
 def test_paginated_document_keeps_source_pagination() -> None:
     document = _Document(pages={1: _Page(height=800.0)}, texts=[_Text("hello", 1)])
 
-    assert to_parsed_document("pdf", document).has_source_pagination is True
+    parsed = to_parsed_document("pdf", document)
+
+    assert parsed.has_source_pagination is True
+    assert parsed.pages[0].has_source_pagination is True
+
+
+def test_mixed_placed_and_unplaced_content_is_retained_with_page_truth() -> None:
+    document = _Document(
+        pages={1: _Page(height=800.0)},
+        texts=[_Text("placed", 1), _Text("unplaced", None)],
+        pictures=[_Region(1, caption="placed"), _Region(None, caption="unplaced figure")],
+        tables=[_Region(0, caption="unplaced table")],
+    )
+
+    parsed = to_parsed_document("pdf", document)
+
+    assert [page.page_number for page in parsed.pages] == [1, 2]
+    assert [page.has_source_pagination for page in parsed.pages] == [True, False]
+    assert parsed.pages[1].text == "unplaced"
+    assert [figure.caption for figure in parsed.pages[1].figures] == [
+        "unplaced figure",
+        "unplaced table",
+    ]
+    assert parsed.has_source_pagination is False
+
+
+def test_docx_pagination_is_synthetic_even_when_backend_reports_pages() -> None:
+    document = _Document(pages={1: _Page(height=800.0)}, texts=[_Text("flow", 1)])
+
+    parsed = to_parsed_document("docx", document)
+
+    assert parsed.pages[0].has_source_pagination is False
+    assert parsed.has_source_pagination is False
 
 
 def test_empty_document_is_not_marked_unpaginated() -> None:

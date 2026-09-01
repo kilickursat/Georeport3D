@@ -11,6 +11,8 @@ worth reading, not a borehole.
 
 from __future__ import annotations
 
+import math
+
 from pydantic import BaseModel, Field, model_validator
 
 from document.base import ParsedDocument, SourceFormat
@@ -31,6 +33,8 @@ class FigureCandidate(BaseModel):
 
     @model_validator(mode="after")
     def ordered_bbox(self) -> FigureCandidate:
+        if self.bbox is not None and not all(math.isfinite(value) for value in self.bbox):
+            raise ValueError("bbox values must be finite")
         if self.bbox is not None and (
             self.bbox[2] < self.bbox[0] or self.bbox[3] < self.bbox[1]
         ):
@@ -44,6 +48,9 @@ class PageInventory(BaseModel):
     page_number: int = Field(ge=1)
     text: str = ""
     figures: list[FigureCandidate] = Field(default_factory=list)
+    # False when this page number is a normalization ordinal rather than a printed
+    # page carried by the source.
+    has_source_pagination: bool = True
 
     @property
     def has_text(self) -> bool:
@@ -61,6 +68,14 @@ class DocumentInventory(BaseModel):
     # False for flow formats such as DOCX. Page numbers are then ordinal positions
     # assigned here, and must not be shown to a user as printed source pages.
     has_source_pagination: bool = True
+
+    @model_validator(mode="after")
+    def pagination_matches_pages(self) -> DocumentInventory:
+        if self.has_source_pagination != all(
+            page.has_source_pagination for page in self.pages
+        ):
+            raise ValueError("document pagination must match its pages")
+        return self
 
     @property
     def page_count(self) -> int:
@@ -83,10 +98,18 @@ class DocumentInventory(BaseModel):
         is a routing signal, not extraction confidence, and `docs/05_DATA_CONTRACT.md`
         requires those kinds of confidence to stay separate.
 
-        When `has_source_pagination` is false the page number is ordinal rather than
-        a printed page, so a citation built from it must be presented as pointing at
-        the document, not at a page the reader could turn to.
+        Synthetic page ordinals cannot yet be represented by the durable Evidence
+        schema. Refusing them here is safer than persisting a false printed-page
+        citation. Real pages in a mixed document remain eligible for evidence.
         """
+        page = next(
+            (page for page in self.pages if page.page_number == figure.page_number),
+            None,
+        )
+        if page is None:
+            raise ValueError("figure page is not in this inventory")
+        if not page.has_source_pagination:
+            raise ValueError("synthetic page cannot produce durable page evidence")
         return Evidence(
             document_id=self.document_id,
             page_number=figure.page_number,
@@ -129,6 +152,7 @@ def build_inventory(
                 page_number=page.page_number,
                 text=page.text,
                 figures=candidates,
+                has_source_pagination=page.has_source_pagination,
             )
         )
 

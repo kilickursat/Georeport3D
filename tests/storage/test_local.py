@@ -111,8 +111,8 @@ def test_save_stream_hashes_and_persists(tmp_path: Path) -> None:
     assert receipt.sha256 == "f8c238346ffe3a51d5124e09056fe5b310b36e44d667566952b7b5e3a66dfb8b"
     assert receipt.state == "UPLOADED"
     assert re.fullmatch(r"[0-9a-f]{32}", receipt.document_id)
-    stored_path = store.path_for(receipt.document_id)
-    assert stored_path.name == f"{receipt.document_id}.bin"
+    stored_path = LocalDocumentStore(tmp_path).path_for(receipt.document_id)
+    assert stored_path.name == f"{receipt.document_id}.pdf"
     assert stored_path.parent == tmp_path.resolve()
     assert stored_path.read_bytes() == b"%PDF-demo"
 
@@ -154,7 +154,9 @@ def test_allowed_suffixes_are_case_insensitive(tmp_path: Path, filename: str) ->
     receipt = store.save_stream(filename, BytesIO(b"document"), max_bytes=8)
 
     assert receipt.original_filename == filename
-    assert store.path_for(receipt.document_id).read_bytes() == b"document"
+    stored_path = store.path_for(receipt.document_id)
+    assert stored_path.suffix == Path(filename).suffix.lower()
+    assert stored_path.read_bytes() == b"document"
 
 
 @pytest.mark.parametrize("filename", ["report.txt", "report", "", ".pdf.txt"])
@@ -189,7 +191,7 @@ def test_display_filename_is_sanitized_for_both_separator_styles(
     assert receipt.original_filename == expected
     stored_path = store.path_for(receipt.document_id)
     assert stored_path.parent == tmp_path.resolve()
-    assert stored_path.name == f"{receipt.document_id}.bin"
+    assert stored_path.name == f"{receipt.document_id}{Path(expected).suffix}"
 
 
 def test_exact_size_boundary_succeeds(tmp_path: Path) -> None:
@@ -360,7 +362,7 @@ def test_dangling_symlink_destination_is_treated_as_collision(
 ) -> None:
     colliding_id = "a" * 32
     available_id = "b" * 32
-    dangling_destination = tmp_path / f"{colliding_id}.bin"
+    dangling_destination = tmp_path / f"{colliding_id}.pdf"
     original_exists = Path.exists
     original_is_symlink = Path.is_symlink
 
@@ -390,7 +392,7 @@ def test_publication_race_does_not_clobber_competing_destination(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     document_id = "a" * 32
-    destination = tmp_path / f"{document_id}.bin"
+    destination = tmp_path / f"{document_id}.pdf"
     temporary = tmp_path / f".{document_id}.tmp"
     monkeypatch.setattr(local_module, "uuid4", uuid_sequence(document_id))
     store = LocalDocumentStore(tmp_path)
@@ -423,7 +425,7 @@ def test_temp_unlink_failure_after_publish_keeps_durable_receipt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     document_id = "a" * 32
-    destination = tmp_path / f"{document_id}.bin"
+    destination = tmp_path / f"{document_id}.pdf"
     temporary = tmp_path / f".{document_id}.tmp"
     original_unlink = Path.unlink
     failed_once = False

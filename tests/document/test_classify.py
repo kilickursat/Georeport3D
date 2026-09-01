@@ -48,6 +48,29 @@ def test_specific_class_wins_over_general_one() -> None:
     assert result.source_type == "borehole_log"
 
 
+def test_strongest_evidence_wins_across_classes() -> None:
+    result = classify_figure(
+        "figure",
+        caption="Geological section A-A",
+        page_text="Refer to the borehole log appendix",
+    )
+
+    assert result.source_type == "section"
+    assert result.score == 0.8
+    assert result.matched_terms == ("geological section",)
+
+
+def test_equal_strength_uses_specificity_order() -> None:
+    result = classify_figure(
+        "figure",
+        caption="Borehole log beside geological section",
+    )
+
+    assert result.source_type == "borehole_log"
+    assert result.score == 0.8
+    assert result.matched_terms == ("borehole log",)
+
+
 def test_matched_terms_are_reported_for_audit() -> None:
     result = classify_figure("figure", caption="Cross Section A-A")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -27,6 +28,8 @@ class Evidence(BaseModel):
 
     @model_validator(mode="after")
     def ordered_bbox(self) -> Evidence:
+        if self.bbox is not None and not all(math.isfinite(value) for value in self.bbox):
+            raise ValueError("bbox values must be finite")
         if self.bbox is not None and (
             self.bbox[2] < self.bbox[0] or self.bbox[3] < self.bbox[1]
         ):
