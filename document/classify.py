@@ -31,6 +31,24 @@ This makes the stage quieter on purpose. A full-page drawing usually carries no
 caption, so it stays at its structural kind and the vision model identifies it -
 which is the only approach that works across languages and house styles this
 vocabulary does not cover.
+
+## What changed in v3, and why
+
+v2 let a full-page drawing be identified by its own title block, on the reasoning
+that such a page's text belongs to the drawing rather than to neighbouring prose.
+That reasoning still holds, but measurement showed the vocabulary was not earning
+it: of the ten recovered drawing sheets, eight were typed and most were typed on
+`stationing` - a chainage convention that says a sheet has distances along an
+alignment, not what the sheet is. The geologic map and one profile matched nothing
+and came back as `figure`, which is indistinguishable from an ordinary unidentified
+figure and reads as though the question had been answered.
+
+So a whole-page region is now typed `drawing_sheet`: a structural statement that
+this is a sheet, and an explicit refusal to say what is on it. Any terms found go to
+`hints`, where they remain useful as a prefilter and an audit trail without being
+asserted. Routing does not depend on them - the region reaches the vision model
+because of its shape - so a report whose language this table does not cover routes
+exactly as well as one it does.
 """
 
 from __future__ import annotations
@@ -40,10 +58,10 @@ from dataclasses import dataclass
 from document.base import FigureKind
 from document.terms import TERMS, SourceType, matches, prepare
 
-# Bumped from v1. This value is part of the cache key in
+# Bumped from v2. This value is part of the cache key in
 # `georeport3d/services/cache.py`, so changing routing behaviour without bumping it
 # would let entries cached under the old behaviour be served as if they were new.
-PREPROCESS_VERSION = "v2"
+PREPROCESS_VERSION = "v3"
 
 _CAPTION_WEIGHT = 0.8
 _CORROBORATED_WEIGHT = 0.9
@@ -99,10 +117,27 @@ def classify_figure(
     caption_hit = _first_match(prepare(caption))
     page_hit = _first_match(prepare(page_text))
 
-    if caption_hit is None and whole_page and page_hit is not None:
-        source_type, terms = page_hit
-        score = min(_MAX_SCORE, _CAPTION_WEIGHT + _ADDITIONAL_TERM_BONUS * (len(terms) - 1))
-        return Classification(source_type=source_type, score=score, matched_terms=terms)
+    if caption_hit is None and whole_page:
+        # Structure decides, and it decides the same way in every language: a region
+        # that *is* its page is one the layout model found nothing to detect on, which
+        # is what a full-sheet engineering drawing looks like. That fact alone routes
+        # it to the vision model, so nothing here has to be identified for it to be
+        # read.
+        #
+        # What the title block says is kept as a lead rather than asserted as the type.
+        # Measured on the real report, eight of ten sheets matched and most matched on
+        # `stationing` - a chainage convention, not a title - while the geologic map
+        # and one profile matched nothing and were typed `figure`, which reads as a
+        # settled answer. One vocabulary that agrees by luck and disagrees silently is
+        # worse than no vocabulary, so the guess now travels beside the region where a
+        # reviewer can see it.
+        hints, hint_type = ((), None) if page_hit is None else (page_hit[1], page_hit[0])
+        return Classification(
+            source_type="drawing_sheet",
+            score=0.0,
+            hints=hints,
+            hint_type=hint_type,
+        )
 
     if caption_hit is None:
         # No caption evidence, so no identification. Fall back to the structural kind
