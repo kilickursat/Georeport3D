@@ -43,20 +43,25 @@ CPU-only document parsing.
 
 Returns the durable job identity and current state. It never starts or resumes work.
 
-## Target endpoints not yet implemented
-
 ### Estimate
 
 `POST /documents/{document_id}/estimate`
 
-Returns:
+Implemented. Parses the document, counts the regions that would be sent to a vision
+model, and prices them through the controller, so the figure a user confirms and the
+reservation later taken against the budget come from one rate. Reaches no provider.
 
-- candidate page count
-- image/figure count
-- cache hit count
-- estimated GPU seconds
-- estimated cost
-- whether confirmation is required
+Returns page count, candidate count, billable count after the per-job cap,
+`exceeds_page_limit`, estimated GPU seconds, estimated cost as a string, and whether
+confirmation is required.
+
+Two fields report what is not yet known rather than guessing it. `cache_hits` is
+`null` until a content hash per figure exists, because zero would read as "nothing is
+cached" and overstate the cost. `calibrated` is `false` until a real inference has
+been measured on the deployed GPU, because a caller that cannot tell an assumption
+from a measurement will treat the first as the second.
+
+## Target endpoints not yet implemented
 
 ### Analyze
 
