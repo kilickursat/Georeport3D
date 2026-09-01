@@ -110,6 +110,36 @@ class LocalDocumentStore:
             )
         raise FileNotFoundError("document not found")
 
+    def delete(self, document_id: str) -> bool:
+        """Delete one validated canonical document, returning whether it existed.
+
+        Cleanup is intentionally unavailable for ambiguous or legacy entries. A
+        caller must never guess which source file is safe to remove.
+        """
+        self._validate_document_id(document_id)
+        canonical = [
+            self._path_for_suffix(document_id, suffix)
+            for suffix in _ALLOWED_SUFFIXES
+            if _path_entry_exists(self._path_for_suffix(document_id, suffix))
+        ]
+        legacy_path = self._path_for_suffix(document_id, _LEGACY_SUFFIX)
+        has_legacy = _path_entry_exists(legacy_path)
+
+        if len(canonical) > 1 or (canonical and has_legacy):
+            raise RuntimeError("multiple stored document entries found")
+        if has_legacy:
+            raise LegacyDocumentFormatError(
+                "legacy document format is unknown; verify and migrate or re-upload it"
+            )
+        if not canonical:
+            return False
+
+        stored_path = canonical[0]
+        if stored_path.is_symlink() or not stored_path.is_file():
+            raise RuntimeError("stored document is not a regular file")
+        stored_path.unlink()
+        return True
+
     def _reserve_upload(self, source_suffix: str) -> tuple[str, Path, Path, BinaryIO]:
         """Own a new temporary path without touching colliding filesystem entries."""
         for _ in range(_MAX_ID_ATTEMPTS):
