@@ -1,6 +1,7 @@
 """Storage contracts shared by API and persistence implementations."""
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import BinaryIO, Literal, Protocol
 
 
@@ -28,3 +29,7 @@ class DocumentStore(Protocol):
         stream: BinaryIO,
         max_bytes: int,
     ) -> DocumentReceipt: ...
+
+    def path_for(self, document_id: str) -> Path: ...
+
+    def delete(self, document_id: str) -> bool: ...
