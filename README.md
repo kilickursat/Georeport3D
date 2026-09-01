@@ -31,6 +31,13 @@
   <a href="docs/19_PRE_DEPLOYMENT_READINESS.md">
     <img alt="Status" src="https://img.shields.io/badge/status-pre--release-orange.svg">
   </a>
+  <a href="https://www.patreon.com/cw/geotechCLI/membership">
+    <img alt="Support on Patreon" src="https://img.shields.io/badge/Patreon-support-f96854.svg">
+  </a>
+</p>
+
+<p align="center">
+  <sub>A side project of <strong>geotechCLI</strong>.</sub>
 </p>
 
 ---
@@ -241,6 +248,19 @@ migration.
 Two rules are non-negotiable in review. Extraction code must never produce a coordinate, CRS, or
 geological contact that is not traceable to source evidence. Generated artifacts, credentials,
 uploaded documents, model weights, and provider logs must never be committed.
+
+## Support
+
+GeoReport3D is a side project of **geotechCLI**, built in the open and released under Apache 2.0.
+There is no company behind it. The GPU hours that turn claims in this README into measurements —
+every benchmark, every real-report run — are paid for directly.
+
+If the project is useful to you, [membership on Patreon](https://www.patreon.com/cw/geotechCLI/membership)
+supports its continued development.
+
+Support does not buy influence over what the project will and will not assert. The provenance
+rules under [Contributing](#contributing) apply the same way to a sponsor, a contributor, and a
+maintainer: an extraction with no evidence behind it is rejected, whoever is asking for it.
 
 ## Acknowledgements
 
