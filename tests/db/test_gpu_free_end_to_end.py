@@ -150,7 +150,16 @@ def test_upload_and_inventory_never_invoke_inference(
     document_id = upload.json()["document_id"]
 
     inventory = client.post(f"/documents/{document_id}/inventory")
+    estimate = client.post(f"/documents/{document_id}/estimate")
     budget = client.get("/budget")
+
+    # Quoting a price must not cost anything, or a user could not ask what a job
+    # costs without already having agreed to pay for it.
+    assert estimate.status_code == 200
+    assert estimate.json()["candidate_count"] == 1
+    # The number is an assumption until step 15 measures one, and says so.
+    assert estimate.json()["calibrated"] is False
+    assert estimate.json()["cache_hits"] is None
 
     assert inventory.status_code == 200
     # The inventory is real work - it routed a region - and still cost nothing.
