@@ -111,6 +111,33 @@ def test_specific_class_wins_over_general_one() -> None:
     assert result.source_type == "borehole_log"
 
 
+def test_strongest_evidence_wins_across_classes() -> None:
+    result = classify_figure(
+        "figure",
+        caption="Geological section A-A",
+        page_text="Refer to the borehole log appendix",
+    )
+
+    assert result.source_type == "section"
+    assert result.score == 0.8
+    # Folded to its canonical form, so a US report and a UK one leave the same audit
+    # trail rather than two spellings of it.
+    assert result.matched_terms == ("geologic section",)
+    # And the contradicting page text survives as a lead for a reviewer.
+    assert result.hint_type == "borehole_log"
+
+
+def test_equal_strength_uses_specificity_order() -> None:
+    result = classify_figure(
+        "figure",
+        caption="Borehole log beside geological section",
+    )
+
+    assert result.source_type == "borehole_log"
+    assert result.score == 0.8
+    assert result.matched_terms == ("bore log",)
+
+
 def test_matched_terms_are_reported_for_audit() -> None:
     result = classify_figure("figure", caption="Cross Section A-A")
 

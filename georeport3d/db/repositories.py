@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -42,10 +42,50 @@ from georeport3d.db.models import (
 from georeport3d.domain.models import Borehole as DomainBorehole
 from georeport3d.domain.models import Evidence as DomainEvidence
 from georeport3d.domain.models import GeotechnicalExtraction
+from georeport3d.services.cache import CacheKeyParts, make_cache_key
+
+# One fixed key, so every process contends for the same admission lock. The value is
+# arbitrary but must never change: a different number would be a different lock, and
+# two deployments holding different numbers would not exclude each other at all.
+_ADMISSION_LOCK_KEY = 0x6733_0D3D_B0DE_7A11
+
+
+# Spelled out here rather than imported from the service that owns the state
+# machine, and deliberately identical to the partial index predicate in revision
+# 20260831_0002. This layer must agree with the database, which is what actually
+# enforces single-flight; importing the service would couple it to the wrong side.
+TERMINAL_JOB_STATES: frozenset[str] = frozenset(
+    {"COMPLETED", "REJECTED", "CANCELLED", "FAILED", "BUDGET_EXCEEDED", "TIMEOUT"}
+)
 
 
 class ProvenanceError(ValueError):
     """An extraction cited provenance that does not belong to its document."""
+
+
+class IdempotencyConflict(ValueError):
+    """One idempotency key was reused for a different unit of work.
+
+    Silently returning the first job would report the wrong result for the second
+    request; silently creating a second job would reserve budget twice under a key
+    whose whole purpose is to prevent that. Neither is safe, so this is explicit.
+    """
+
+
+class CacheIdentityError(ValueError):
+    """A cache row's key does not describe the parts supplied alongside it.
+
+    The key is the identity. Storing a result under a key derived from different
+    parts would serve that result to requests it does not answer.
+    """
+
+
+@dataclass(frozen=True)
+class AdmissionDecision:
+    """Whether a job may proceed to a GPU, and the stable reason when it may not."""
+
+    authorized: bool
+    reason: str | None = None
 
 
 def _decimal(value: float | int | Decimal | None) -> Decimal | None:
@@ -95,27 +135,37 @@ class DocumentRepository:
         sha256: str,
         size_bytes: int,
         state: str = "UPLOADED",
+        *,
+        document_id: UUID | None = None,
     ) -> tuple[Document, bool]:
         """Return the document and whether this call created it.
 
         The same bytes uploaded twice into one project must resolve to the same
         document, otherwise observations would be split across duplicate rows.
         """
-        existing = self.get_by_sha256(project_id, sha256)
-        if existing is not None:
-            return existing, False
-
-        document = Document(
-            id=uuid4(),
-            project_id=project_id,
-            original_filename=original_filename,
-            sha256=sha256,
-            size_bytes=size_bytes,
-            state=state,
-        )
-        self._session.add(document)
+        created_id = self._session.execute(
+            pg_insert(Document)
+            .values(
+                id=document_id or uuid4(),
+                project_id=project_id,
+                original_filename=original_filename,
+                sha256=sha256,
+                size_bytes=size_bytes,
+                state=state,
+            )
+            .on_conflict_do_nothing(index_elements=["project_id", "sha256"])
+            .returning(Document.id)
+        ).scalar_one_or_none()
         self._session.flush()
-        return document, True
+        if created_id is not None:
+            document = self._session.get(Document, created_id)
+            assert document is not None
+            return document, True
+
+        existing = self.get_by_sha256(project_id, sha256)
+        if existing is None:  # pragma: no cover - only on concurrent deletion
+            raise LookupError("document vanished between insert and lookup")
+        return existing, False
 
     def get(self, document_id: UUID) -> Document | None:
         return self._session.get(Document, document_id)
@@ -315,6 +365,7 @@ class InferenceJobRepository:
         estimated_usd: float | Decimal,
         reserved_usd: float | Decimal,
         model_revision: str | None = None,
+        cache_key: str | None = None,
         # QUEUED is the documented entry state. The column is a plain string with no
         # enum constraint, so an undocumented default here would silently create jobs
         # the state machine cannot advance.
@@ -322,8 +373,18 @@ class InferenceJobRepository:
     ) -> tuple[InferenceJob, bool]:
         """Return the job and whether this call created it.
 
-        A repeated request with the same key must resolve to the existing job.
-        Returning a second job would reserve budget twice for one piece of work.
+        Two different collisions resolve here, and they are not the same thing.
+
+        A repeated *idempotency key* must resolve to the existing job, but only when
+        it describes the same work. Returning the first job for a different request
+        would answer with someone else's result; creating a second would reserve
+        budget twice under a key whose purpose is to prevent exactly that. A changed
+        identity is therefore an error, not a silent choice between two wrong answers.
+
+        A repeated *cache key* is single-flight: two distinct requests for identical
+        work that arrive together must converge on one job, or each would authorize a
+        GPU and pay twice for one result. The partial unique index decides the winner
+        in the database, so the outcome does not depend on which process asked first.
         """
         statement = (
             pg_insert(InferenceJob)
@@ -332,6 +393,7 @@ class InferenceJobRepository:
                 document_id=document_id,
                 state=state,
                 idempotency_key=idempotency_key,
+                cache_key=cache_key,
                 provider=provider,
                 model_id=model_id,
                 model_revision=model_revision,
@@ -340,7 +402,9 @@ class InferenceJobRepository:
                 estimated_usd=_decimal(estimated_usd),
                 reserved_usd=_decimal(reserved_usd),
             )
-            .on_conflict_do_nothing(index_elements=["idempotency_key"])
+            # No conflict target: this must also absorb the live-cache-key index, not
+            # only the idempotency key.
+            .on_conflict_do_nothing()
             .returning(InferenceJob.id)
         )
         created_id = self._session.execute(statement).scalar_one_or_none()
@@ -352,9 +416,72 @@ class InferenceJobRepository:
             return job, True
 
         existing = self.get_by_idempotency_key(idempotency_key)
+        if existing is None and cache_key is not None:
+            # Lost the single-flight race rather than the idempotency one: the live
+            # job for this work belongs to another request key.
+            existing = self.live_by_cache_key(cache_key, TERMINAL_JOB_STATES)
         if existing is None:  # pragma: no cover - only on concurrent deletion
             raise LookupError("job vanished between insert and lookup")
+
+        self._require_same_identity(
+            existing,
+            document_id=document_id,
+            cache_key=cache_key,
+            provider=provider,
+            model_id=model_id,
+            model_revision=model_revision,
+            prompt_version=prompt_version,
+            preprocess_version=preprocess_version,
+        )
         return existing, False
+
+    @staticmethod
+    def _require_same_identity(
+        existing: InferenceJob,
+        *,
+        document_id: UUID,
+        cache_key: str | None,
+        provider: str,
+        model_id: str,
+        model_revision: str | None,
+        prompt_version: str,
+        preprocess_version: str,
+    ) -> None:
+        """Raise unless the persisted job describes the work being asked for.
+
+        A persisted `cache_key` of None predates identity persistence and cannot be
+        compared, so the remaining fields carry the check for those rows rather than
+        every legacy replay being reported as a conflict.
+        """
+        mismatches = [
+            name
+            for name, persisted, requested in (
+                ("document_id", existing.document_id, document_id),
+                ("provider", existing.provider, provider),
+                ("model_id", existing.model_id, model_id),
+                ("model_revision", existing.model_revision, model_revision),
+                ("prompt_version", existing.prompt_version, prompt_version),
+                ("preprocess_version", existing.preprocess_version, preprocess_version),
+            )
+            if persisted != requested
+        ]
+        if existing.cache_key is not None and existing.cache_key != cache_key:
+            mismatches.append("cache_key")
+        if mismatches:
+            raise IdempotencyConflict(
+                "idempotency key reused for different work: " + ", ".join(sorted(mismatches))
+            )
+
+    def live_by_cache_key(
+        self, cache_key: str, terminal_states: Collection[str]
+    ) -> InferenceJob | None:
+        """The one non-terminal job for this work, if any is currently live."""
+        return self._session.scalars(
+            select(InferenceJob).where(
+                InferenceJob.cache_key == cache_key,
+                InferenceJob.state.notin_(list(terminal_states)),
+            )
+        ).first()
 
     def get(self, job_id: UUID) -> InferenceJob | None:
         return self._session.get(InferenceJob, job_id)
@@ -372,6 +499,45 @@ class InferenceJobRepository:
         job.error_code = error_code
         self._session.flush()
         return job
+
+    def compare_and_set_state(
+        self,
+        job_id: UUID,
+        expected_state: str,
+        target_state: str,
+        *,
+        error_code: str | None = None,
+        reserved_usd: Decimal | None = None,
+    ) -> bool:
+        """Move a job only if it is still in the state the caller last observed.
+
+        Returns False when the persisted state has moved on, which is how a stale
+        caller is stopped from reviving a job someone else already cancelled or
+        failed. A read-then-write cannot do this: between the read and the write the
+        row can change, and the write would overwrite that change.
+
+        `LookupError` is reserved for a job that does not exist, so a caller can tell
+        "gone" apart from "moved on".
+        """
+        values: dict[str, object] = {"state": target_state, "error_code": error_code}
+        if reserved_usd is not None:
+            values["reserved_usd"] = _decimal(reserved_usd)
+
+        result = self._session.execute(
+            update(InferenceJob)
+            .where(InferenceJob.id == job_id, InferenceJob.state == expected_state)
+            .values(**values)
+        )
+        if result.rowcount == 1:
+            # The UPDATE bypassed the identity map, so anything already loaded in
+            # this session still holds the previous state.
+            self._session.expire_all()
+            self._session.flush()
+            return True
+
+        if self._session.get(InferenceJob, job_id) is None:
+            raise LookupError("job does not exist")
+        return False
 
 
 class UsageRepository:
@@ -430,6 +596,67 @@ class BudgetRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def admit_and_reserve(
+        self,
+        *,
+        job_id: UUID,
+        expected_state: str,
+        estimate_usd: Decimal,
+        job_cap_usd: Decimal,
+        ceiling_usd: Decimal,
+        max_concurrent_gpu_jobs: int,
+        gpu_slot_states: Collection[str],
+        terminal_states: Collection[str],
+    ) -> AdmissionDecision:
+        """Decide and take a reservation inside one serialized critical section.
+
+        Every check here reads state that another process can change, and the
+        reservation that follows is only correct if nothing moved in between. A
+        process-local lock cannot provide that: the API runs in more than one worker,
+        so two processes would each hold their own lock, each read the same position,
+        and each reserve against a budget that only affords one of them.
+
+        `pg_advisory_xact_lock` is held by PostgreSQL until this transaction commits
+        or rolls back, so the next caller reads a position that already includes this
+        reservation. It cannot be leaked by a crash, because ending the transaction
+        releases it.
+        """
+        self._session.execute(select(func.pg_advisory_xact_lock(_ADMISSION_LOCK_KEY)))
+
+        jobs = InferenceJobRepository(self._session)
+        # Read after the lock: anything loaded before it may predate a commit the
+        # lock just waited for.
+        self._session.expire_all()
+        job = jobs.get(job_id)
+        if job is None or job.state != expected_state:
+            return AdmissionDecision(False, "STALE_JOB_STATE")
+
+        if estimate_usd > job_cap_usd:
+            return AdmissionDecision(False, "JOB_CAP_EXCEEDED")
+
+        position = self.position(terminal_states)
+        if position.committed_usd + estimate_usd > ceiling_usd:
+            return AdmissionDecision(False, "BUDGET_EXHAUSTED")
+
+        live_gpu_jobs = self._session.scalar(
+            select(func.count())
+            .select_from(InferenceJob)
+            .where(InferenceJob.state.in_(list(gpu_slot_states)))
+        )
+        if (live_gpu_jobs or 0) >= max_concurrent_gpu_jobs:
+            return AdmissionDecision(False, "GPU_CONCURRENCY_LIMIT")
+
+        # The reservation and the state change are one statement, so a job can never
+        # hold budget without being authorized or be authorized without holding it.
+        if not jobs.compare_and_set_state(
+            job_id,
+            expected_state=expected_state,
+            target_state="GPU_AUTHORIZED",
+            reserved_usd=estimate_usd,
+        ):
+            return AdmissionDecision(False, "STALE_JOB_STATE")
+        return AdmissionDecision(True)
+
     def position(self, terminal_states: Collection[str]) -> BudgetPosition:
         reserved = self._session.scalar(
             select(func.coalesce(func.sum(InferenceJob.reserved_usd), 0)).where(
@@ -471,7 +698,25 @@ class CacheRepository:
         Concurrent workers can finish the same work at once. The first result wins
         and the second is discarded rather than raising, because both describe the
         same cache key and neither is more correct than the other.
+
+        The key is recomputed from the parts before anything is written. The key is
+        the identity, so a row stored under a key its own parts do not produce would
+        be served to requests it does not answer - a wrong result returned with full
+        confidence and no GPU call to notice it.
         """
+        expected = make_cache_key(
+            CacheKeyParts(
+                document_sha256=document_sha256,
+                figure_sha256=figure_sha256,
+                model_id=model_id,
+                model_revision=model_revision,
+                prompt_version=prompt_version,
+                preprocess_version=preprocess_version,
+            )
+        )
+        if expected != cache_key:
+            raise CacheIdentityError("cache key does not match the parts supplied with it")
+
         statement = (
             pg_insert(InferenceCache)
             .values(

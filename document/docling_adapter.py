@@ -8,36 +8,17 @@ structural fake without installing the backend.
 All bounding boxes are normalized to a top-left origin. Docling may report either
 origin depending on the backend, and an un-normalized box would place the "show
 source" overlay on the wrong part of the page.
-
-## Adaptive OCR
-
-Geotechnical reports arrive in every shape: born-digital prose, scanned paper, and
-vector CAD plots exported straight from the drafting system. Measured against a real
-105-page baseline report, the text layer alone recovered 3 to 88 characters from the
-drawing sheets against a document median of 2,584 - and those sheets carry the
-geologic profiles and the borehole location plan, which is to say all of the
-subsurface geology. Enabling OCR on them recovered 118 times more text, including
-the stratigraphy, the borehole identifiers, and the elevations.
-
-Rather than assume a document is one kind or the other, the parser measures. It
-parses once without OCR, finds pages whose text layer is too sparse to be prose, and
-re-parses only those with OCR on. A born-digital report pays nothing; a scanned one
-is fully recovered. Nothing about the decision depends on the document's language or
-house style.
-
-OCR text is a routing signal, not a source of values. It misreads exactly the
-characters that matter here - a `15'RT` offset read back as `151RT`, two station
-numbers merged into `20+0022+00` - so downstream stages must take values from the
-vision model reading the page image, not from this text.
 """
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Protocol
 
 from document.base import (
+    DocumentPageLimitError,
     DocumentParseError,
     DocumentParserUnavailableError,
     ParsedDocument,
@@ -46,19 +27,20 @@ from document.base import (
     SourceFormat,
     UnsupportedDocumentError,
 )
-from document.noise import strip_noise
 
 _SUFFIXES: dict[str, SourceFormat] = {".pdf": "pdf", ".docx": "docx"}
+_DEFAULT_MAX_PAGES = 500
 
-# A page of a technical report carrying fewer characters than this in its text layer
-# is not prose. It is a drawing, a scan, or a divider. The threshold is absolute
-# rather than relative to the document, because a fully scanned report would have a
-# sparse median and a relative rule would then flag nothing at all.
+
+# Absolute, not a fraction of the document's median. A relative threshold flags
+# nothing on a report that is scanned throughout, because there every page is
+# equally sparse; measured against a real 105-page report, 200 characters separates
+# the drawing sheets from the prose without catching a single body page.
 SPARSE_TEXT_CHARS = 200
 
 
 class _Converter(Protocol):
-    def convert(self, source: Any, **kwargs: Any) -> Any: ...
+    def convert(self, source: Any) -> Any: ...
 
 
 def _source_format(path: Path) -> SourceFormat:
@@ -69,29 +51,35 @@ def _source_format(path: Path) -> SourceFormat:
 
 
 def _page_heights(document: Any) -> dict[int, float]:
-    """Page heights, needed to convert a bottom-left box to a top-left one.
-
-    Kept separate from `_page_sizes` on purpose: a height alone is enough to place a
-    box correctly, so requiring a width as well would discard boxes the parser can
-    convert perfectly well.
-    """
     heights: dict[int, float] = {}
     for page_no, page in (getattr(document, "pages", None) or {}).items():
-        height = getattr(getattr(page, "size", None), "height", None)
-        if isinstance(height, (int, float)) and height > 0:
+        size = getattr(page, "size", None)
+        height = getattr(size, "height", None)
+        if isinstance(height, (int, float)) and math.isfinite(height) and height > 0:
             heights[int(page_no)] = float(height)
     return heights
 
 
 def _page_sizes(document: Any) -> dict[int, tuple[float, float]]:
-    """Page width and height, used to size a whole-page fallback region."""
+    """Page width and height, used to size a whole-page fallback region.
+
+    Kept separate from `_page_heights`, which exists to convert a bottom-left bbox
+    and is correct with height alone. A fallback needs both, and requiring width
+    there would drop the conversion for pages that report only a height.
+    """
     sizes: dict[int, tuple[float, float]] = {}
     for page_no, page in (getattr(document, "pages", None) or {}).items():
         size = getattr(page, "size", None)
         width, height = getattr(size, "width", None), getattr(size, "height", None)
-        if isinstance(width, (int, float)) and isinstance(height, (int, float)):
-            if width > 0 and height > 0:
-                sizes[int(page_no)] = (float(width), float(height))
+        if (
+            isinstance(width, (int, float))
+            and isinstance(height, (int, float))
+            and math.isfinite(width)
+            and math.isfinite(height)
+            and width > 0
+            and height > 0
+        ):
+            sizes[int(page_no)] = (float(width), float(height))
     return sizes
 
 
@@ -120,17 +108,20 @@ def _bbox(provenance: Any, page_height: float | None) -> tuple[float, float, flo
         return None
 
     try:
-        left, top, right, bottom = bbox.as_tuple()
+        left, top, right, bottom = (float(value) for value in bbox.as_tuple())
     except Exception:  # noqa: BLE001 - same
+        return None
+
+    if not all(math.isfinite(value) for value in (left, top, right, bottom)):
         return None
 
     # A rectangle carries the same region regardless of corner order, so ordering the
     # pairs preserves meaning while satisfying the contract's bbox invariant.
     return (
-        float(min(left, right)),
-        float(min(top, bottom)),
-        float(max(left, right)),
-        float(max(top, bottom)),
+        min(left, right),
+        min(top, bottom),
+        max(left, right),
+        max(top, bottom),
     )
 
 
@@ -193,15 +184,11 @@ def _figures(
     return figures, unplaced
 
 
-def _join(parts: list[str] | tuple[str, ...]) -> str:
-    """Join page text and remove machine-generated title-block tokens."""
-    return strip_noise("\n".join(parts))
-
-
 def to_parsed_document(source_format: SourceFormat, document: Any) -> ParsedDocument:
     """Convert one Docling document into the normalized parse contract."""
+    heights = _page_heights(document)
     texts, unplaced_text = _page_texts(document)
-    figures, unplaced_figures = _figures(document, _page_heights(document))
+    figures, unplaced_figures = _figures(document, heights)
 
     source_pages = {
         int(page_no)
@@ -210,40 +197,40 @@ def to_parsed_document(source_format: SourceFormat, document: Any) -> ParsedDocu
     }
     page_numbers = sorted(source_pages | set(texts) | set(figures))
 
-    if not page_numbers:
-        if not unplaced_text and not unplaced_figures:
-            return ParsedDocument(source_format=source_format)
-        # A flow format such as DOCX reports no pages at all. Collapse it onto one
-        # ordinal page so evidence still resolves to a document and a region, and
-        # record that the number is ours rather than the source's.
-        return ParsedDocument(
-            source_format=source_format,
-            pages=(
-                ParsedPage(
-                    page_number=1,
-                    text=_join(unplaced_text),
-                    figures=tuple(
-                        ParsedFigure(
-                            page_number=1,
-                            kind=kind,
-                            caption=_caption(item, document),
-                        )
-                        for kind, item in unplaced_figures
-                    ),
-                ),
-            ),
-            has_source_pagination=False,
-        )
-
-    pages = tuple(
+    pages = [
         ParsedPage(
             page_number=page_number,
-            text=_join(texts.get(page_number, [])),
+            text="\n".join(texts.get(page_number, ())),
             figures=tuple(figures.get(page_number, ())),
+            has_source_pagination=source_format == "pdf",
         )
         for page_number in page_numbers
+    ]
+
+    if unplaced_text or unplaced_figures:
+        synthetic_page_number = (page_numbers[-1] if page_numbers else 0) + 1
+        pages.append(
+            ParsedPage(
+                page_number=synthetic_page_number,
+                text="\n".join(unplaced_text),
+                figures=tuple(
+                    ParsedFigure(
+                        page_number=synthetic_page_number,
+                        kind=kind,
+                        caption=_caption(item, document),
+                    )
+                    for kind, item in unplaced_figures
+                ),
+                has_source_pagination=False,
+            )
+        )
+
+    has_source_pagination = all(page.has_source_pagination for page in pages)
+    return ParsedDocument(
+        source_format=source_format,
+        pages=tuple(pages),
+        has_source_pagination=has_source_pagination,
     )
-    return ParsedDocument(source_format=source_format, pages=pages)
 
 
 def sparse_pages(parsed: ParsedDocument, threshold: int = SPARSE_TEXT_CHARS) -> tuple[int, ...]:
@@ -275,6 +262,7 @@ def merge_ocr_text(
                     else page.text
                 ),
                 figures=page.figures,
+                has_source_pagination=page.has_source_pagination,
             )
             for page in base.pages
         ),
@@ -295,6 +283,9 @@ def add_page_fallbacks(
     was sparse enough to be a drawing and no region was detected, the page becomes
     the region, marked `page_fallback` so a consumer can tell it apart from a located
     feature.
+
+    Only pages carrying real source pagination are eligible. A synthetic page holding
+    unplaced content is not a sheet, and offering it as one would route a phantom.
     """
     wanted = set(pages)
     return ParsedDocument(
@@ -305,7 +296,9 @@ def add_page_fallbacks(
                 text=page.text,
                 figures=(
                     page.figures
-                    if page.figures or page.page_number not in wanted
+                    if page.figures
+                    or page.page_number not in wanted
+                    or not page.has_source_pagination
                     else (
                         ParsedFigure(
                             page_number=page.page_number,
@@ -319,6 +312,7 @@ def add_page_fallbacks(
                         ),
                     )
                 ),
+                has_source_pagination=page.has_source_pagination,
             )
             for page in parsed.pages
         ),
@@ -334,14 +328,18 @@ class DoclingDocumentParser:
         converter_factory: Any | None = None,
         ocr_converter_factory: Any | None = None,
         *,
+        max_pages: int = _DEFAULT_MAX_PAGES,
         enable_ocr: bool = True,
         sparse_threshold: int = SPARSE_TEXT_CHARS,
     ) -> None:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
+            raise ValueError("max_pages must be a positive integer")
+        self._converter_factory = converter_factory or self._default_converter
+        self._max_pages = max_pages
         # An injected converter substitutes the whole backend. If the caller supplies
         # one and no OCR counterpart, that backend has no OCR mode, and quietly
         # reaching for the real Docling one instead would make a test with a fake
         # converter open real files.
-        self._converter_factory = converter_factory or self._default_converter
         if ocr_converter_factory is not None:
             self._ocr_converter_factory = ocr_converter_factory
         elif converter_factory is None:
@@ -352,65 +350,92 @@ class DoclingDocumentParser:
         self._sparse_threshold = sparse_threshold
 
     @staticmethod
-    def _pipeline_options(do_ocr: bool) -> Any:
+    def _default_converter() -> _Converter:
         """Build the lean pipeline the inventory actually needs.
+
+        Two of Docling's defaults are switched off deliberately.
 
         Table structure recognition runs TableFormer to recover cells inside a
         table. The inventory only needs the table's region and page, which comes
         from layout, so the stage costs time and buys nothing here. It also imports
         opencv, which requires the X11 library `libxcb.so.1` and therefore fails on
         a headless container unless that system package is added to the image.
+
+        OCR is off because the inventory reads the text layer. Scanned pages need a
+        deliberate decision about an OCR engine, its cost, and its accuracy, rather
+        than being switched on by a library default.
         """
-        try:
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
-        except ImportError as exc:
-            raise DocumentParserUnavailableError("document parser is not installed") from exc
-
-        options = PdfPipelineOptions()
-        options.do_ocr = do_ocr
-        options.do_table_structure = False
-        return options
-
-    @classmethod
-    def _build(cls, do_ocr: bool) -> _Converter:
+        unavailable = False
         try:
             from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
             from docling.document_converter import DocumentConverter, PdfFormatOption
-        except ImportError as exc:
-            raise DocumentParserUnavailableError("document parser is not installed") from exc
+        except ImportError:
+            unavailable = True
 
+        if unavailable:
+            raise DocumentParserUnavailableError("document parser is not installed") from None
+
+        options = PdfPipelineOptions()
+        options.do_ocr = False
+        options.do_table_structure = False
         return DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=cls._pipeline_options(do_ocr))
-            }
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
         )
 
-    @classmethod
-    def _default_converter(cls) -> _Converter:
-        """The fast pass: text layer only, no OCR."""
-        return cls._build(do_ocr=False)
-
-    @classmethod
-    def _ocr_converter(cls) -> _Converter:
-        """The recovery pass, used only on pages the text layer could not read."""
-        return cls._build(do_ocr=True)
-
     @staticmethod
-    def _convert(converter: _Converter, path: Path, **kwargs: Any) -> Any:
+    def _ocr_converter() -> _Converter:
+        """The recovery pass, used only on pages the text layer could not read.
+
+        Identical to the default converter except that OCR is on. It is built
+        separately and used only where it is needed, because OCR costs roughly three
+        times the parse time and most pages do not need it.
+        """
         try:
-            return converter.convert(path, **kwargs).document
-        except DocumentParseError:
-            raise
-        except Exception as exc:
-            raise DocumentParseError("document could not be parsed") from exc
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+        except ImportError:
+            raise DocumentParserUnavailableError("document parser is not installed") from None
+
+        options = PdfPipelineOptions()
+        options.do_ocr = True
+        options.do_table_structure = False
+        return DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+        )
 
     def parse(self, path: Path) -> ParsedDocument:
-        """Parse one local document without leaking its content into errors."""
-        source_format = _source_format(path)
+        """Parse one local document without leaking its content into errors.
 
-        document = self._convert(self._converter_factory(), path)
-        parsed = to_parsed_document(source_format, document)
-        sizes = _page_sizes(document)
+        ``max_pages`` is enforced on the normalized result. It prevents an
+        over-limit document from entering inventory or inference, but it does not
+        bound Docling's conversion work because this adapter cannot rely on a
+        stable pre-conversion page-limit API across the supported backend range.
+        """
+        source_format = _source_format(path)
+        parsed: ParsedDocument | None = None
+        sizes: dict[int, tuple[float, float]] = {}
+        outward_error: DocumentParseError | None = None
+        try:
+            converter = self._converter_factory()
+            document = converter.convert(path).document
+            parsed = to_parsed_document(source_format, document)
+            sizes = _page_sizes(document)
+        except DocumentParserUnavailableError:
+            outward_error = DocumentParserUnavailableError("document parser is not installed")
+        except Exception:  # noqa: BLE001 - all backend details stop at this boundary
+            outward_error = DocumentParseError("document could not be parsed")
+
+        # Raise only after leaving the handler. This deliberately prevents the
+        # backend exception from remaining reachable through __context__ even when
+        # callers inspect the outward exception object directly.
+        if outward_error is not None:
+            raise outward_error from None
+        if parsed is None:  # pragma: no cover - every non-success branch sets an error
+            raise DocumentParseError("document could not be parsed")
+        if len(parsed.pages) > self._max_pages:
+            raise DocumentPageLimitError("document exceeds page limit")
 
         if not parsed.has_source_pagination:
             # A flow format has no pages and no drawing sheets to recover. Its text
@@ -422,7 +447,6 @@ class DoclingDocumentParser:
         sparse = sparse_pages(parsed, self._sparse_threshold)
         if sparse and self._enable_ocr and self._ocr_converter_factory is not None:
             parsed = self._recover(source_format, path, parsed, sparse)
-
         return add_page_fallbacks(parsed, sparse, sizes)
 
     def _recover(
@@ -438,15 +462,17 @@ class DoclingDocumentParser:
         few dense pages again inside that span is cheaper than orchestrating one
         conversion per run of pages, and produces the same result because only sparse
         pages are merged back.
+
+        Any failure returns the text-layer result unchanged. OCR is a recovery path,
+        so losing the parse because the recovery failed would be worse than the gap
+        it was trying to fill. Backend detail stops here, as it does in `parse`.
         """
+        recovered: ParsedDocument | None = None
         try:
-            ocr_document = self._convert(
-                self._ocr_converter_factory(),
-                path,
-                page_range=(min(sparse), max(sparse)),
-            )
-        except DocumentParserUnavailableError:
-            # OCR is a recovery path. If the backend cannot provide it, the text
-            # layer result still stands and must not be lost.
+            ocr_document = self._ocr_converter_factory().convert(
+                path, page_range=(min(sparse), max(sparse))
+            ).document
+            recovered = to_parsed_document(source_format, ocr_document)
+        except Exception:  # noqa: BLE001 - recovery is optional; the base parse stands
             return parsed
-        return merge_ocr_text(parsed, to_parsed_document(source_format, ocr_document), sparse)
+        return merge_ocr_text(parsed, recovered, sparse)

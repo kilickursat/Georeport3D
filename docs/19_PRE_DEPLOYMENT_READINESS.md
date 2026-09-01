@@ -5,16 +5,31 @@
 This document records what is real, intentionally fake, stale, or only scaffolded before any
 deployment. It is an evidence register, not a claim that the MVP is complete.
 
-The audit covers the repository state on 2026-08-27: the root README, `docs/00` through
+The original audit covers the repository state on 2026-08-27: the root README, `docs/00` through
 `docs/18`, the developer checklist, Python source, tests, configuration, Modal deployment code,
 database SQL, and the web boundary. Source inspection and dependency-free checks can establish
 code contracts, but they cannot prove a cloud image builds, a model fits, PostGIS migrations run,
 or the browser workflow works.
 
+The document-boundary rows and narrative were updated on 2026-08-31 after code-level repair of
+local storage suffixes, Docling normalization, deterministic classification, and inventory
+pagination truth. That update is not target-environment or deployment evidence.
+
 No Modal deployment, model download, model load, vLLM launch, GPU allocation, paid inference,
 FastAPI Cloud action, Docker pull, or remote CI run was attempted during this work. Model weights
 must not be downloaded to the local workstation. Modal and model investigation is intentionally
 deferred until the user runs the deployment and returns concrete logs or failures.
+
+The manual GitHub Actions boundary uses protected GitHub environment `modal-production`. Its
+GitHub secrets are exactly `MODAL_ID` and `MODAL_ID_SECRET`, mapped only at runtime to
+`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. It rejects refs other than `refs/heads/main` and targets
+Modal environment `main` explicitly. Modal named Secret and Volume lookups are environment-scoped,
+so `huggingface-secret`, `georeport3d-hf-cache`, and `georeport3d-vllm-cache` refer to resources in
+that `main` environment.
+
+No live Modal verification was performed for the workflow hardening. Source contracts cannot
+prove credentials, Modal SDK behavior, an image build, model access, GPU fit, inference, cost, or
+scale-to-zero; those remain separately authorized target-environment gates.
 
 An unchecked item in `docs/15_DEVELOPER_CHECKLIST.md` means **not yet proven in the required
 environment**. It is not automatically a test failure. A failed gate requires an attempted check
@@ -55,8 +70,9 @@ deployment-ready merely because it compiles or has unit tests.
 The repository is suitable for continued code-level development and offline contract review. It is
 currently a **NO-GO for public or paid deployment**. The upload foundation, domain contracts,
 budget ledger, cache-key function, storage implementation, Modal worker contract, CPU-side
-provider, and PostGIS metadata/baseline migration are real code. The document-processing pipeline,
-job orchestration, persistent cache and budget accounting, application persistence repositories,
+provider, PostGIS metadata/baseline migration, and CPU document adapter/inventory are real code.
+The document pipeline is not wired to its API workflow or proven with the optional backend in this
+environment. Job orchestration, persistent cache and budget accounting, persistence integration,
 web application, authentication, production observability, dependency lock, and target-environment
 verification are not complete. The PostGIS code has not been executed against a database.
 
@@ -83,18 +99,18 @@ that definition.
 | C-04 | `tests/modal/test_namespace.py` | SCAFFOLD / DEFERRED GATE | Proves the repository no longer shadows the official `modal` package, but requires the SDK. | Yes. | Run after approved dependency sync. | Test passes and `modal.__file__` resolves outside the repository. | Local namespace collision could break deployment tooling. |
 | C-05 | `deployment/README.md` | SCAFFOLD / CODE-LEVEL RUNBOOK | Records intended commands, rollback, logs, volumes, external secrets, cost boundaries, separate smoke authorization, and evidence collection; none were executed here. | Yes. | Validate every command against the approved Modal SDK and environment, then revise the runbook from retained operator evidence. | Runbook review plus a user-executed build/deployment later. | SDK drift or an untested operator assumption could make the procedure fail. |
 | C-06 | `georeport3d/config.py`, `config/policy.yaml` | SCAFFOLD / CODE-LEVEL | Typed policy constrains L4 and scaling; production rejects mock; limits and canonical cache fields are modeled. | Yes. | Validate every production setting at startup and version policy changes; connect limits to every relevant workflow. | Config tests and staging startup with production-shaped non-secret config. | Declared policy may not be enforced by orchestration. |
-| C-07 | `apps/api/app/main.py` health and budget routes | SCAFFOLD / CODE-LEVEL | `/health` is shallow; `/budget` reports one in-memory ledger. | Yes. | Add readiness/dependency health and persistent, scoped budget accounting. | API tests, restart test, concurrent reservation test, dependency-failure probes. | Healthy response may hide failed DB/provider; restart loses spend. |
-| C-08 | `apps/api/app/main.py` upload route | SCAFFOLD / CODE-LEVEL | Streams PDF/DOCX by suffix, enforces byte limit, hashes and stores, and does not invoke inference. | Yes. | Add content/type validation, malware/content policy as required, metadata persistence, ownership, retention, and retrieval controls. | API tests with real fixtures, hostile files, restart, permissions, and cleanup. | Untrusted or mislabeled content may be stored; orphaned uploads may accumulate. |
-| C-09 | `georeport3d/storage/local.py` | SCAFFOLD / CODE-LEVEL | Uses bounded streaming, sanitized display names, SHA-256, fsync, and no-clobber publication under a resolved root. | Yes for local/dev. | Select a durable private production store, define backup/retention/encryption, and persist receipts transactionally. | Fault-injection tests plus production-store integration and recovery drill. | Single-host loss, missing lifecycle policy, or inaccessible files after scaling. |
+| C-07 | `apps/api/app/main.py` health and budget routes | SCAFFOLD / CODE-LEVEL | `/health` is shallow; `/budget` reads durable PostgreSQL reservations and settled usage when persistence is configured, with an explicit in-memory fallback for isolated factory tests. | Yes. | Add readiness/dependency health, ownership scopes, and calibrated provider reconciliation. | API restart/concurrency tests and dependency-failure probes. | Healthy response may still hide failed storage/provider; the fallback must not be used as production accounting. |
+| C-08 | `apps/api/app/main.py` project/upload/inventory routes | SCAFFOLD / CODE-LEVEL | Creates projects, persists project-scoped PDF/DOCX uploads with one storage/database UUID, cleans duplicate/failed upload copies, and exposes CPU-only inventory without invoking inference. The former storage-only upload is deprecated. | Yes. | Add authentication/authorization, content validation, malware policy, private production storage, retention, and durable inventory snapshots. | PostGIS API tests with fixtures, hostile files, restart, permissions, cleanup, and upload-to-inventory flow. | Untrusted content may be stored; local storage is single-host; inventory recomputation is not yet a durable snapshot. |
+| C-09 | `georeport3d/storage/local.py` | SCAFFOLD / CODE-LEVEL | Uses bounded streaming, sanitized display names, SHA-256, fsync, no-clobber publication, and durable `<id>.pdf`/`<id>.docx` lookup under a resolved root. Restart lookup uses the filesystem, rejects ambiguous/non-regular entries, and surfaces legacy `<id>.bin` as unknown format. | Yes for local/dev. | Select a durable private production store, define backup/retention/encryption, persist receipts transactionally, and verify/re-upload or explicitly migrate legacy BIN entries without guessing their type. | Fault-injection, cross-format collision, restart, legacy-state, production-store integration, and recovery tests. | Single-host loss, missing lifecycle policy, or inaccessible/ambiguous legacy files after scaling. |
 | C-10 | `georeport3d/services/budget.py` | SCAFFOLD / CODE-LEVEL | Thread-safe in-memory estimates, reservations, release, and record operations. | Yes as domain logic. | Back it with transactional persistence and idempotent job state; calibrate the rate/estimator from real runs. | Concurrency/restart tests and reconciliation against Modal usage. | Restart or multiple API replicas can overspend the cap. |
 | C-11 | `georeport3d/services/cache.py` | SCAFFOLD / CODE-LEVEL | Produces a canonical versioned SHA-256 key only. | Yes. | Implement a persistent cache store, lookup-before-budget/GPU ordering, validated result storage, and invalidation policy. | Cache miss/hit integration test proving the second request makes no remote call. | Duplicate GPU spend or reuse of mismatched results. |
 | C-12 | API inference provider on `app.state` | SCAFFOLD / NOT WIRED | Factory builds/injects a provider, but no route invokes it. | Yes. | Add explicit estimate/analyze job orchestration; upload must remain inference-free. | End-to-end mock job test and later authorized Modal job test. | A deploy appears functional while analysis is unavailable. |
-| C-13 | `docs/10_API_AND_JOB_STATE.md` endpoints/state machine | SCAFFOLD / DOCS ONLY | Specifies inventory, estimate, analyze, status, cancel, extraction, borehole, section, and page endpoints; code implements only health, budget, upload. | Yes as target spec. | Implement states, idempotency, cancellation, timeout, persistence, and error transitions. | Contract/integration tests covering every state and duplicate request. | Missing workflow, duplicate jobs, uncontrolled cost, and inconsistent status. |
+| C-13 | `docs/10_API_AND_JOB_STATE.md` endpoints/state machine | SCAFFOLD / PARTIALLY WIRED | Health, durable budget, project creation, persistent upload, CPU inventory, and read-only job status are implemented. Estimate, analyze, cancel, extraction, borehole, section, and page delivery remain target endpoints. | Yes as a staged contract. | Accept the controller-safety work, add server-owned render/crop/prompt orchestration, then implement the remaining authenticated routes. | Contract/integration tests covering every state, duplicate request, and restart. | The vertical slice still cannot launch analysis or return persisted extraction. |
 | C-14 | `georeport3d/domain/models.py` and validation | SCAFFOLD / CODE-LEVEL | Enforces evidence for boreholes/intervals, paired XY, bounds, and interval-vs-total-depth checks. | Yes. | Expand deterministic CRS, duplicate, overlap, provenance completeness, unit, and cross-record validation. | Property/fixture tests and rejection corpus. | Invalid or contradictory geology may be accepted. |
 | C-15 | `ai/prompts/` | SCAFFOLD / NOT WIRED | Prompt constants prohibit invention and request provenance, but are not connected to a versioned task builder. | Yes. | Add prompt assembly, image/text boundaries, schemas, version IDs, token limits, and injection tests. | Golden prompt tests and extraction benchmark provenance. | Worker may receive inconsistent or unsafe prompts. |
-| C-16 | `document/` | SCAFFOLD / EMPTY | Package contains no Docling adapter, inventory, pages, thumbnails, or figure detection. | Yes, implement. | Build the CPU-first document pipeline before GPU analysis. | PDF/DOCX fixture integration tests and inventory inspection. | Vertical slice cannot identify model inputs. |
+| C-16 | `document/` | SCAFFOLD / CODE-LEVEL | Lazily adapts Docling PDF/DOCX output into deterministic pages/regions; the persistent API now invokes it as an explicit CPU-only inventory step with redacted failures. | Yes, continue. | Persist reviewed inventory snapshots; add pagination truth to Evidence before synthetic evidence can persist; choose a stable pre-conversion limit and benchmark OCR/real reports. | Adapter regressions plus PostGIS API and Docling PDF/DOCX integration tests. | The post-conversion guard does not cap Docling work; synthetic evidence cannot yet persist; OCR and completeness remain unproven. |
 | C-17 | `geology/` | SCAFFOLD / EMPTY | No coordinate transformation, borehole geometry, sections, or uncertainty engine exists. | Yes, implement incrementally. | Start with observed boreholes and deterministic CRS transforms; do not interpolate unsupported geology. | Known-coordinate transformation fixtures and visual spatial checks. | Wrong placement or invented surfaces. |
-| C-18 | PostGIS ORM/migrations/repositories | SCAFFOLD / CODE-LEVEL | SQLAlchemy metadata and an explicit Alembic baseline now exist; repositories and live database proof do not. | Yes. | Verify the migration, then add repositories and transaction boundaries. | Metadata/runtime tests, migration head, real PostGIS upgrade, CRUD/provenance tests. | Schema/runtime drift and no application-level durable observations/jobs/costs. |
+| C-18 | PostGIS ORM/migrations/repositories | SCAFFOLD / CODE-LEVEL | SQLAlchemy metadata, Alembic baseline, short unit-of-work boundaries, repositories, and authorized PostGIS integration tests exist; the API now uses them for project/document/job/budget state. | Yes. | Run migration and concurrency gates in the authorized service, then add ownership scopes, recovery drills, and operational backups. | Migration head, CRUD/provenance, concurrent deduplication/admission, restart, and recovery tests. | Schema/runtime drift, unavailable PostGIS, or missing recovery controls can still stop durable workflows. |
 | C-19 | `apps/web/README.md` | SCAFFOLD / DOCS ONLY | Declares Next.js, React, CesiumJS, React Three Fiber and viewer layers; no web source/package manifest exists. | Yes as architecture. | Implement upload/job/evidence UI and an initial lightweight borehole viewer. | Browser tests and known-coordinate screenshots/interaction recordings. | There is no usable browser product. |
 | C-20 | CesiumJS plus Three.js design | SCAFFOLD / PRESERVE | CesiumJS owns geospatial context; Three.js/R3F owns engineering geometry and interaction. | Yes. | Keep both roles explicit and feed them stable API coordinates/provenance. | Coordinate fixtures and visual acceptance tests. | Role drift can duplicate transforms or create inconsistent scenes. |
 | C-21 | 3D Tiles | SCAFFOLD / FUTURE | Architecture reserves 3D Tiles for large streamed datasets; first MVP does not require it. | Yes as future design, not a current gate. | Begin with JSON/GeoJSON/lightweight Three.js; add tiles only after measured scale need. | Dataset/performance benchmark justifying tiling. | Premature tiling increases complexity; claiming support now misleads users. |
@@ -103,7 +119,7 @@ that definition.
 | C-24 | `.env.example` and `.gitignore` | SCAFFOLD / CODE-LEVEL | Secret fields are placeholders; `.env*` is ignored except the example; generated/local data paths are ignored. | Yes. | Use a secrets manager or platform secrets; scan the staged tree and history before push/deploy. | Secret scan reports zero credentials; staging reads secrets externally. | Credential exposure or insecure default reuse. |
 | C-25 | `pyproject.toml` | SCAFFOLD / CODE-LEVEL | Defines supported Python and bounded dependency ranges, but not a resolved environment. | Yes. | Include all real runtime/migration dependencies and generate a reviewed lock in an approved environment. | Successful locked sync on Python 3.12/3.13 and dependency audit. | Non-reproducible or incompatible builds. |
 | C-26 | `uv.lock` | SCAFFOLD / ABSENT | No lock file exists because dependency resolution was blocked by the firewall. | Must be created. | Generate with approved network access; review source and resolved versions. | Clean `uv sync --frozen` succeeds. | Dependency drift and unverifiable release contents. |
-| C-27 | `tests/` and Ruff/build gates | SCAFFOLD / PARTIALLY CHECKABLE | Focused tests exist, but full pytest, Ruff, build, and FastAPI import gates are deferred without dependencies. | Yes. | Run the exact documented gates after sync; add integration/e2e/security tests for missing workflows. | Retained command output from the release commit; no unexpected skips. | Source-only confidence may hide import/runtime failures. |
+| C-27 | `tests/` and Ruff/build gates | SCAFFOLD / PARTIALLY CHECKABLE | Focused tests exist, including a dependency-free upload/storage-to-fake-Docling boundary unittest, but full pytest, Pydantic inventory tests, optional real Docling tests, Ruff, build, and FastAPI import gates are deferred without dependencies. | Yes. | Run the exact documented gates in GitHub Actions/after approved sync; add integration/e2e/security tests for missing workflows. | Retained command output from the release commit; no unexpected skips. | Source-only and fake-converter confidence may hide framework/backend integration failures. |
 | C-28 | Observability | SCAFFOLD / NOT PRESENT | No structured application logging, metrics, traces, audit log, durable job events, or alert rules are implemented. | Required before production. | Add redacted structured logs, request/job IDs, state/cost metrics, provider latency/errors, and alerts. | Staging trace of one job plus redaction and alert tests. | Failures/cost spikes become invisible; confidential content may leak during ad hoc debugging. |
 | C-29 | vLLM/Modal output handling | SCAFFOLD / UNVERIFIED | Worker inherits child stdout to avoid pipe deadlock; request-content redaction has not been proven against real vLLM logs. | Yes with controls. | Verify logging flags and retained logs contain no prompts, images, raw pages, model output, or tokens/secrets. | Redaction inspection from authorized smoke/build logs. | Confidential report content may enter provider logs. |
 | C-30 | `.venv/` and `.superpowers/` | GENERATED / LOCAL | Local environment and implementation evidence are intentionally ignored. | Local only. | Never stage; recreate environment from the lock. Retain internal evidence locally as needed. | Staged-file inventory excludes both. | Huge, machine-specific, or sensitive files enter the release. |
@@ -152,21 +168,52 @@ work on PostgreSQL/PostGIS.
 
 ## API, job, budget, cache, and storage wiring
 
-The implemented API surface is currently `GET /health`, `GET /budget`, and
-`POST /documents/upload`. Upload performs bounded storage and hashing and correctly avoids
-inference. The documented vertical slice still needs inventory, estimate, analyze, job status,
-cancel, extraction, borehole, section, and source-page routes.
+The implemented API surface now includes `GET /health`, durable `GET /budget`,
+`POST /projects`, project-scoped persistent upload, CPU-only inventory, and read-only job
+status. Upload and inventory correctly avoid inference. The deprecated storage-only upload
+route remains for compatibility. The vertical slice still needs estimate, analyze, cancel,
+extraction, borehole, section, and source-page routes.
 
-The budget ledger and cache key are meaningful reusable domain components, not fake behavior. They
-are nevertheless scaffolded at system level: budget state is in process memory, and there is no
-cache store. A production job controller must make cache lookup and durable budget reservation
-atomic/idempotent enough that retries, multiple API replicas, restarts, or repeated browser requests
-cannot create duplicate GPU spend.
+The API budget view is derived from durable job reservations and usage rows when PostgreSQL is
+configured. The in-memory ledger remains only as the rate calculator and isolated factory-test
+fallback. Estimate/analyze are deliberately absent until the controller-safety PR supplies atomic
+cache, admission, idempotency, reconciliation, and provenance behavior.
 
-The local filesystem store is appropriate for development and code-level tests. Production must
-choose and verify a private durable store, persist receipt metadata, enforce ownership and
-retention, and define recovery. File suffix acceptance alone is insufficient validation for
-hostile uploads.
+The local filesystem store is appropriate for development and code-level tests. New durable names
+retain the validated canonical `.pdf` or `.docx` suffix, and `path_for(document_id)` discovers that
+format from disk after restart rather than relying on an in-memory index. The ID namespace covers
+both canonical formats, legacy BIN entries, and temporary reservations; publication remains
+no-clobber. A legacy `<document_id>.bin` has no durable trusted format metadata. Operators must
+re-upload it or verify its type from trusted records/content validation and migrate it to exactly
+one canonical name; automatic sniffing or filename guessing is intentionally absent.
+
+Production must choose and verify a private durable store, persist receipt metadata, enforce
+ownership and retention, and define recovery. File suffix acceptance alone is insufficient
+validation for hostile or mislabeled uploads.
+
+## Document boundary: code-only state and limitations
+
+`DoclingDocumentParser` accepts an explicit `max_pages` argument with a default of 500. The check
+runs only after conversion and normalization. It prevents an over-limit result from entering the
+inventory/inference path, but it does **not** bound Docling's CPU, memory, or time while converting
+the source. A stronger resource boundary requires a supported backend preflight/page-limit API or
+an independently validated pre-conversion counter; neither is claimed here.
+
+Normalization retains unplaced text, pictures, and tables instead of silently dropping them. It
+appends them in backend order to a deterministic synthetic page after any placed pages. DOCX page
+ordinals are also synthetic because the source is a flow format. Pagination truth is carried per
+parsed/inventory page, so a real PDF page in a mixed document remains distinguishable from the
+synthetic overflow page. The current durable `Evidence` model cannot carry that truth. Therefore
+`DocumentInventory.evidence_for` permits real pages and rejects synthetic pages rather than
+persisting a false printed-page citation. The precise follow-up is an Alembic migration plus ORM,
+Pydantic, repository, and API mapping for a field such as `page_number_is_synthetic` (or an
+equivalent pagination-kind enum); only then should synthetic-page evidence be persisted.
+
+All factory, conversion, and normalization failures crossing the Docling boundary are replaced by
+generic exception objects with no original cause or context. Optional malformed bounding boxes
+are dropped by the adapter, while normalized/inventory/evidence contracts reject any NaN or
+infinite coordinate. OCR remains disabled and completeness on scanned or mixed real reports is a
+separate benchmark gate.
 
 ## Web mapping and 3D rendering
 
@@ -259,8 +306,9 @@ or production credentials.
    from that migration and label it non-authoritative.
 2. Implement PostGIS repositories and transactions for documents, observations, evidence links,
    inference jobs, usage, and cache records.
-3. Implement the CPU document inventory for PDF/DOCX, page/figure provenance, and borehole candidate
-   detection with deterministic fixtures.
+3. Wire the code-level CPU PDF/DOCX inventory into the upload/job workflow; run the Pydantic and
+   optional Docling fixture suites in GitHub Actions, add the synthetic-pagination Evidence schema
+   migration, and retain deterministic real-report inspection evidence.
 4. Implement the persistent cache and durable budget/job controller in the enforced order:
    cache -> estimate -> reserve/confirm -> inference -> validate -> persist/reconcile.
 5. Implement missing job, extraction, spatial, and source-page endpoints with idempotency,

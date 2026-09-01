@@ -40,13 +40,13 @@ of our own is published there.
    - Contract tests extended in `tests/modal/test_deployment_contract.py`; the
      `_vllm_command` assertion in `tests/modal/test_worker.py` was updated deliberately,
      since pinning changes that contract.
-   - Follow-up: the reported `model_revision` in the result envelope still comes from the
-     request, and `Settings.model_revision` defaults to `None`, so the CPU side reports
-     "unknown" rather than the revision the container actually serves. The provider
-     verifies the worker echoes the request, so the worker must not report its own value
-     unilaterally — making the two agree, and rejecting a mismatch, is a contract change
-     spanning both sides. It belongs with the job controller in step 7, which is where the
-     cache key that consumes `model_revision` is built.
+   - Closed by step 14 and locked by `tests/inference/test_revision_contract.py`.
+     `Settings.model_revision` now defaults to the pinned commit rather than `None`, so
+     the CPU side no longer derives cache keys from a value naming no model. The worker
+     reports its own source-controlled constant and refuses a request for any other
+     revision; the provider refuses a result whose metadata claims a different identity
+     than was authorized. All three had to agree, because `model_revision` is one of the
+     six fields the cache key is built from.
 4. ✅ **Deploy workflow** — `.github/workflows/deploy.yml`, `workflow_dispatch` only,
    behind the `modal-production` environment, which requires a reviewer and permits
    protected branches only.
@@ -109,9 +109,8 @@ of our own is published there.
    - Fixed: `InferenceJobRepository.create` defaulted to `PENDING`, a state absent
      from `docs/10` and unenforced by the column, so jobs were created in a state the
      machine cannot advance out of.
-   - Follow-up: not wired to any route yet (step 8). `model_revision` still comes
-     from settings rather than from what the container serves, so the step 3
-     follow-up remains open.
+   - Follow-up: not wired to any route yet (step 8). The `model_revision` follow-up
+     from step 3 is closed.
 8. ⬜ **Job and extraction endpoints** — Implement the inventory, estimate, analyze,
    status, cancel, extraction, borehole, section, and page routes from
    `docs/10_API_AND_JOB_STATE.md` (C-13) with idempotency keys, timeouts, and stable
@@ -132,8 +131,18 @@ of our own is published there.
 
 ## Phase 3 — Deploy
 
-13. ⬜ **GPU-free end-to-end test** — Prove with the mock provider that upload alone
-    never invokes inference and that a cache hit never reaches the remote boundary.
+13. ✅ **GPU-free end-to-end test** — Both cost guarantees are demonstrated against a
+    real database in `tests/db/test_gpu_free_end_to_end.py`.
+    - The provider under test is a genuine `ModalInferenceProvider` whose resolver
+      raises. The resolver is the last CPU-side step before Modal is contacted, so the
+      claim proved is that nothing reaches the boundary — not merely that a Python
+      method went uncalled, which a fake provider would have shown.
+    - Upload → inventory drives the real routes and routes a region, at zero attempts.
+    - A cache hit settles `COMPLETED` at exactly `Decimal(0)` without the boundary, and
+      still does so under a budget too small to admit any miss, which is what makes
+      cache-first ordering a cost guarantee rather than an optimisation.
+    - A deliberate miss asserts the boundary *is* reached, so the other three tests
+      cannot pass by the controller having quietly stopped calling the provider.
 14. ⬜ **Modal deploy, no inference** — From CI with explicit approval: build the image,
     pull the pinned checkpoint into the Modal volume, register the vLLM class, capture
     SDK version, app identity, and rollback identifier.

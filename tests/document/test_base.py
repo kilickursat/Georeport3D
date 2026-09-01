@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from document.base import ParsedDocument, ParsedFigure, ParsedPage
@@ -18,6 +20,16 @@ def test_page_numbers_start_at_one() -> None:
 def test_inverted_bbox_is_rejected() -> None:
     with pytest.raises(ValueError, match="bbox maximums"):
         ParsedFigure(page_number=1, kind="figure", bbox=(10.0, 10.0, 5.0, 20.0))
+
+
+@pytest.mark.parametrize("non_finite", [math.nan, math.inf, -math.inf])
+def test_non_finite_bbox_is_rejected(non_finite: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        ParsedFigure(
+            page_number=1,
+            kind="figure",
+            bbox=(non_finite, 10.0, non_finite, 20.0),
+        )
 
 
 def test_figure_must_belong_to_its_page() -> None:
