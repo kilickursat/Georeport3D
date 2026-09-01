@@ -475,9 +475,9 @@ class ModalWorkerContractTests(unittest.TestCase):
         tree = _worker_tree()
         literal_constants = {
             "VLLM_PORT": 8000,
-            "GPU": "L4",
+            "GPU": "L40S",
             "MIN_CONTAINERS": 0,
-            "MAX_CONTAINERS": 1,
+            "MAX_CONTAINERS": 2,
             "BUFFER_CONTAINERS": 0,
             "SCALEDOWN_WINDOW_SECONDS": 10,
             "TIMEOUT_SECONDS": 900,

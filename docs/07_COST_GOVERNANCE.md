@@ -12,9 +12,16 @@ Do not design the public MVP around continuous GPU residency.
 
 Initial benchmark target:
 
-`Modal L4 + Qwen3.6-27B-NVFP4 + vLLM`
+`Modal L40S + Qwen3.6-27B-NVFP4 + vLLM`
 
-Modal currently lists L4 at $0.000222/sec, equivalent to $0.7992/hour. This is the published resource price and excludes other resources or future pricing changes.
+Modal's published per-second prices, checked 2026-09-01: L40S $0.000542/sec ($1.9512/hour) and
+L4 $0.000222/sec ($0.7992/hour). These are resource prices and exclude other resources or future
+pricing changes.
+
+The billing rate is not a constant in the code. `georeport3d.services.budget.profile_for` looks it
+up from `policy.modal.gpu`, so changing the deployed GPU changes what spend is recorded against
+the cap. An unknown GPU raises rather than defaulting, because a silent fallback to the L4 rate
+would bill an L40S at 41% of its real cost and the error would surface only after overspending.
 
 ## Hard policy
 

@@ -59,7 +59,7 @@ carries the full register with per-item evidence requirements.
 | Domain models, evidence and depth validation | Implemented and tested |
 | Budget ledger and canonical cache key | Implemented, in-memory only |
 | PostGIS schema and Alembic baseline | Migration verified against PostGIS 17-3.5 in CI |
-| Modal worker declaration (vLLM, one L4, scale-to-zero) | Declared and contract-tested, never deployed |
+| Modal worker declaration (vLLM, L40S, scale-to-zero) | Declared and contract-tested, never deployed |
 | Document pipeline (Docling adapter, inventory, figure routing) | Implemented at code level; not wired to an API route or target-proven |
 | Geology (CRS transforms, borehole geometry) | Not started |
 | Job orchestration and extraction endpoints | Not started |
@@ -76,7 +76,7 @@ flowchart LR
   F --> C{Cache hit?}
   C -- yes --> V[Validated result]
   C -- no --> B[Budget estimate + explicit authorization]
-  B --> M[Modal L4 · Qwen3.6-27B-NVFP4 · vLLM]
+  B --> M[Modal L40S · Qwen3.6-27B-NVFP4 · vLLM]
   M --> P[Schema + evidence validation]
   P --> V
   V --> D[(PostGIS)]
@@ -150,7 +150,7 @@ service container, on each pull request.
 
 ## Deployment
 
-Production inference runs on Modal serverless GPU — one L4 container serving
+Production inference runs on Modal serverless GPU — up to two L40S containers serving
 `unsloth/Qwen3.6-27B-NVFP4` under vLLM, pinned to an exact revision, scaling to zero with no
 automatic retries. Model weights live inside the Modal container and are never downloaded to a
 workstation or a CI runner.

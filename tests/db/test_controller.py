@@ -169,7 +169,9 @@ def _policy(
             max_concurrent_gpu_jobs=max_concurrent_gpu_jobs,
         ),
         cache=CachePolicy(enabled=True, key_fields=list(CANONICAL_CACHE_KEY_FIELDS)),
-        modal=ModalPolicy(),
+        # Pinned to L4 so the rate assertions below stay about measured-time
+        # arithmetic rather than about which GPU the project currently deploys.
+        modal=ModalPolicy(gpu="L4"),
     )
 
 
