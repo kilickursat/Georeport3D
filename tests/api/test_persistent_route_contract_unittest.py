@@ -51,7 +51,10 @@ class PersistentRouteContractTests(unittest.TestCase):
         self.assertNotIn('"DATABASE_NOT_CONFIGURED"', _SOURCE)
 
     def test_unsupported_document_format_has_a_distinct_handler(self) -> None:
-        route = _function("inventory_document")
+        # The parse-error handling lives in the helper both the inventory and
+        # estimate routes call, so that one parse cannot produce two different
+        # public error contracts depending on which route asked for it.
+        route = _function("_inventory_for")
         handlers = [node for node in ast.walk(route) if isinstance(node, ast.ExceptHandler)]
         unsupported = next(
             (
