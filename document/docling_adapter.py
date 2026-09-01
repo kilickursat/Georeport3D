@@ -32,6 +32,13 @@ _SUFFIXES: dict[str, SourceFormat] = {".pdf": "pdf", ".docx": "docx"}
 _DEFAULT_MAX_PAGES = 500
 
 
+# Absolute, not a fraction of the document's median. A relative threshold flags
+# nothing on a report that is scanned throughout, because there every page is
+# equally sparse; measured against a real 105-page report, 200 characters separates
+# the drawing sheets from the prose without catching a single body page.
+SPARSE_TEXT_CHARS = 200
+
+
 class _Converter(Protocol):
     def convert(self, source: Any) -> Any: ...
 
@@ -51,6 +58,29 @@ def _page_heights(document: Any) -> dict[int, float]:
         if isinstance(height, (int, float)) and math.isfinite(height) and height > 0:
             heights[int(page_no)] = float(height)
     return heights
+
+
+def _page_sizes(document: Any) -> dict[int, tuple[float, float]]:
+    """Page width and height, used to size a whole-page fallback region.
+
+    Kept separate from `_page_heights`, which exists to convert a bottom-left bbox
+    and is correct with height alone. A fallback needs both, and requiring width
+    there would drop the conversion for pages that report only a height.
+    """
+    sizes: dict[int, tuple[float, float]] = {}
+    for page_no, page in (getattr(document, "pages", None) or {}).items():
+        size = getattr(page, "size", None)
+        width, height = getattr(size, "width", None), getattr(size, "height", None)
+        if (
+            isinstance(width, (int, float))
+            and isinstance(height, (int, float))
+            and math.isfinite(width)
+            and math.isfinite(height)
+            and width > 0
+            and height > 0
+        ):
+            sizes[int(page_no)] = (float(width), float(height))
+    return sizes
 
 
 def _first_provenance(item: Any) -> Any | None:
@@ -203,19 +233,121 @@ def to_parsed_document(source_format: SourceFormat, document: Any) -> ParsedDocu
     )
 
 
+def sparse_pages(parsed: ParsedDocument, threshold: int = SPARSE_TEXT_CHARS) -> tuple[int, ...]:
+    """Pages whose text layer is too thin to be prose, and so may need OCR."""
+    return tuple(page.page_number for page in parsed.pages if len(page.text) < threshold)
+
+
+def merge_ocr_text(
+    base: ParsedDocument,
+    ocr: ParsedDocument,
+    pages: tuple[int, ...],
+) -> ParsedDocument:
+    """Replace the text of `pages` with the OCR pass, keeping detected regions.
+
+    Regions come from the base pass. OCR changes what text a page yields; measured
+    against the real report it changed nothing about which regions were detected, so
+    taking regions from the base pass keeps one source of truth for geometry.
+    """
+    replacements = {page.page_number: page.text for page in ocr.pages}
+    wanted = set(pages)
+    return ParsedDocument(
+        source_format=base.source_format,
+        pages=tuple(
+            ParsedPage(
+                page_number=page.page_number,
+                text=(
+                    replacements.get(page.page_number, page.text)
+                    if page.page_number in wanted
+                    else page.text
+                ),
+                figures=page.figures,
+                has_source_pagination=page.has_source_pagination,
+            )
+            for page in base.pages
+        ),
+        has_source_pagination=base.has_source_pagination,
+    )
+
+
+def add_page_fallbacks(
+    parsed: ParsedDocument,
+    pages: tuple[int, ...],
+    sizes: dict[int, tuple[float, float]],
+) -> ParsedDocument:
+    """Offer the page itself as a region where a drawing page yielded none.
+
+    The layout model does not recognise a full-page CAD plot as a figure, so nine
+    geologic profile sheets in the measured report produced no region at all: nothing
+    to route to the vision model, and no box for a citation to point at. Where a page
+    was sparse enough to be a drawing and no region was detected, the page becomes
+    the region, marked `page_fallback` so a consumer can tell it apart from a located
+    feature.
+
+    Only pages carrying real source pagination are eligible. A synthetic page holding
+    unplaced content is not a sheet, and offering it as one would route a phantom.
+    """
+    wanted = set(pages)
+    return ParsedDocument(
+        source_format=parsed.source_format,
+        pages=tuple(
+            ParsedPage(
+                page_number=page.page_number,
+                text=page.text,
+                figures=(
+                    page.figures
+                    if page.figures
+                    or page.page_number not in wanted
+                    or not page.has_source_pagination
+                    else (
+                        ParsedFigure(
+                            page_number=page.page_number,
+                            kind="figure",
+                            bbox=(
+                                (0.0, 0.0, *sizes[page.page_number])
+                                if page.page_number in sizes
+                                else None
+                            ),
+                            origin="page_fallback",
+                        ),
+                    )
+                ),
+                has_source_pagination=page.has_source_pagination,
+            )
+            for page in parsed.pages
+        ),
+        has_source_pagination=parsed.has_source_pagination,
+    )
+
+
 class DoclingDocumentParser:
     """Parse PDF and DOCX into the normalized inventory contract."""
 
     def __init__(
         self,
         converter_factory: Any | None = None,
+        ocr_converter_factory: Any | None = None,
         *,
         max_pages: int = _DEFAULT_MAX_PAGES,
+        enable_ocr: bool = True,
+        sparse_threshold: int = SPARSE_TEXT_CHARS,
     ) -> None:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
             raise ValueError("max_pages must be a positive integer")
         self._converter_factory = converter_factory or self._default_converter
         self._max_pages = max_pages
+        # An injected converter substitutes the whole backend. If the caller supplies
+        # one and no OCR counterpart, that backend has no OCR mode, and quietly
+        # reaching for the real Docling one instead would make a test with a fake
+        # converter open real files.
+        if ocr_converter_factory is not None:
+            self._ocr_converter_factory = ocr_converter_factory
+        elif converter_factory is None:
+            self._ocr_converter_factory = self._ocr_converter
+        else:
+            self._ocr_converter_factory = None
+        self._enable_ocr = enable_ocr
+        self._sparse_threshold = sparse_threshold
 
     @staticmethod
     def _default_converter() -> _Converter:
@@ -251,6 +383,28 @@ class DoclingDocumentParser:
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
         )
 
+    @staticmethod
+    def _ocr_converter() -> _Converter:
+        """The recovery pass, used only on pages the text layer could not read.
+
+        Identical to the default converter except that OCR is on. It is built
+        separately and used only where it is needed, because OCR costs roughly three
+        times the parse time and most pages do not need it.
+        """
+        try:
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+        except ImportError:
+            raise DocumentParserUnavailableError("document parser is not installed") from None
+
+        options = PdfPipelineOptions()
+        options.do_ocr = True
+        options.do_table_structure = False
+        return DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+        )
+
     def parse(self, path: Path) -> ParsedDocument:
         """Parse one local document without leaking its content into errors.
 
@@ -261,11 +415,13 @@ class DoclingDocumentParser:
         """
         source_format = _source_format(path)
         parsed: ParsedDocument | None = None
+        sizes: dict[int, tuple[float, float]] = {}
         outward_error: DocumentParseError | None = None
         try:
             converter = self._converter_factory()
             document = converter.convert(path).document
             parsed = to_parsed_document(source_format, document)
+            sizes = _page_sizes(document)
         except DocumentParserUnavailableError:
             outward_error = DocumentParserUnavailableError("document parser is not installed")
         except Exception:  # noqa: BLE001 - all backend details stop at this boundary
@@ -280,4 +436,43 @@ class DoclingDocumentParser:
             raise DocumentParseError("document could not be parsed")
         if len(parsed.pages) > self._max_pages:
             raise DocumentPageLimitError("document exceeds page limit")
-        return parsed
+
+        if not parsed.has_source_pagination:
+            # A flow format has no pages and no drawing sheets to recover. Its text
+            # layer is the document, so sparse text means a short document rather
+            # than an unreadable one, and inventing a whole-page region would route
+            # a phantom to the vision model.
+            return parsed
+
+        sparse = sparse_pages(parsed, self._sparse_threshold)
+        if sparse and self._enable_ocr and self._ocr_converter_factory is not None:
+            parsed = self._recover(source_format, path, parsed, sparse)
+        return add_page_fallbacks(parsed, sparse, sizes)
+
+    def _recover(
+        self,
+        source_format: SourceFormat,
+        path: Path,
+        parsed: ParsedDocument,
+        sparse: tuple[int, ...],
+    ) -> ParsedDocument:
+        """Re-read the sparse pages with OCR and merge their text back in.
+
+        A single span covering the sparse pages costs one extra conversion. Reading a
+        few dense pages again inside that span is cheaper than orchestrating one
+        conversion per run of pages, and produces the same result because only sparse
+        pages are merged back.
+
+        Any failure returns the text-layer result unchanged. OCR is a recovery path,
+        so losing the parse because the recovery failed would be worse than the gap
+        it was trying to fill. Backend detail stops here, as it does in `parse`.
+        """
+        recovered: ParsedDocument | None = None
+        try:
+            ocr_document = self._ocr_converter_factory().convert(
+                path, page_range=(min(sparse), max(sparse))
+            ).document
+            recovered = to_parsed_document(source_format, ocr_document)
+        except Exception:  # noqa: BLE001 - recovery is optional; the base parse stands
+            return parsed
+        return merge_ocr_text(parsed, recovered, sparse)

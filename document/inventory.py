@@ -15,19 +15,30 @@ import math
 
 from pydantic import BaseModel, Field, model_validator
 
-from document.base import ParsedDocument, SourceFormat
+from document.base import ParsedDocument, RegionOrigin, SourceFormat
 from document.classify import PREPROCESS_VERSION, SourceType, classify_figure
 from georeport3d.domain.models import Evidence
 
 
 class FigureCandidate(BaseModel):
-    """One region routed for later extraction, with the reason it was routed."""
+    """One region routed for later extraction, with the reason it was routed.
+
+    `matched_terms` are caption terms that identified the region. `hints` are terms
+    found only in surrounding page text: they say what the page discusses, not what
+    this region is, and are carried for a reviewer rather than acted on.
+
+    `origin` distinguishes a located region from a whole page offered as one because
+    the layout model found nothing on a drawing sheet.
+    """
 
     figure_id: str = Field(min_length=1)
     page_number: int = Field(ge=1)
     source_type: SourceType
     score: float = Field(ge=0.0, le=1.0)
     matched_terms: tuple[str, ...] = ()
+    hints: tuple[str, ...] = ()
+    hint_type: SourceType | None = None
+    origin: RegionOrigin = "detected"
     bbox: tuple[float, float, float, float] | None = None
     caption: str | None = None
 
@@ -133,6 +144,8 @@ def build_inventory(
                 kind=figure.kind,
                 caption=figure.caption,
                 page_text=page.text,
+                # A fallback region is the page, so the page's text is its own.
+                whole_page=figure.origin == "page_fallback",
             )
             candidates.append(
                 FigureCandidate(
@@ -143,6 +156,9 @@ def build_inventory(
                     source_type=classification.source_type,
                     score=classification.score,
                     matched_terms=classification.matched_terms,
+                    hints=classification.hints,
+                    hint_type=classification.hint_type,
+                    origin=figure.origin,
                     bbox=figure.bbox,
                     caption=figure.caption,
                 )
