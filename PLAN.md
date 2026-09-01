@@ -132,8 +132,18 @@ of our own is published there.
 
 ## Phase 3 — Deploy
 
-13. ⬜ **GPU-free end-to-end test** — Prove with the mock provider that upload alone
-    never invokes inference and that a cache hit never reaches the remote boundary.
+13. ✅ **GPU-free end-to-end test** — Both cost guarantees are demonstrated against a
+    real database in `tests/db/test_gpu_free_end_to_end.py`.
+    - The provider under test is a genuine `ModalInferenceProvider` whose resolver
+      raises. The resolver is the last CPU-side step before Modal is contacted, so the
+      claim proved is that nothing reaches the boundary — not merely that a Python
+      method went uncalled, which a fake provider would have shown.
+    - Upload → inventory drives the real routes and routes a region, at zero attempts.
+    - A cache hit settles `COMPLETED` at exactly `Decimal(0)` without the boundary, and
+      still does so under a budget too small to admit any miss, which is what makes
+      cache-first ordering a cost guarantee rather than an optimisation.
+    - A deliberate miss asserts the boundary *is* reached, so the other three tests
+      cannot pass by the controller having quietly stopped calling the provider.
 14. ⬜ **Modal deploy, no inference** — From CI with explicit approval: build the image,
     pull the pinned checkpoint into the Modal volume, register the vLLM class, capture
     SDK version, app identity, and rollback identifier.
