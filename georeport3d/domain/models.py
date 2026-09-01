@@ -16,6 +16,10 @@ class Evidence(BaseModel):
         "borehole_log",
         "section",
         "map",
+        # A full drawing sheet whose subject has not been determined. Recorded as its
+        # own kind rather than as `figure` so that a citation cannot read as a settled
+        # identification when nothing identified it.
+        "drawing_sheet",
         "other",
     ]
     bbox: tuple[float, float, float, float] | None = None
