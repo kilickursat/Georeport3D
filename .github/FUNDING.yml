@@ -1,0 +1,7 @@
+# Renders the "Sponsor" button on the repository page.
+#
+# `custom` rather than the built-in `patreon:` key: that key takes a bare username
+# and builds https://patreon.com/<username>, which does not reach a membership page
+# under Patreon's /cw/ path. Spelling the URL out sends people where they are meant
+# to land instead of somewhere close to it.
+custom: ["https://www.patreon.com/cw/geotechCLI/membership"]
