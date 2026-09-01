@@ -21,7 +21,7 @@ returns a redacted error or evidence.
 - GitHub environment: `modal-production`
 - Modal environment `main`
 - Secret: `huggingface-secret`
-- GPU: one L4
+- GPU: L40S, at most two containers
 - Containers: minimum 0, maximum 1, buffer 0
 - Scale-down window: 10 seconds
 - Invocation timeout: 900 seconds
