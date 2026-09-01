@@ -358,7 +358,12 @@ class ClassificationPriorityTests(unittest.TestCase):
 
         self.assertEqual(result.source_type, "section")
         self.assertEqual(result.score, 0.8)
-        self.assertEqual(result.matched_terms, ("geological section",))
+        # Terms are reported in their folded canonical form. "geological" and
+        # "geologic" are one term to the matcher, so a US report and a UK one
+        # produce the same audit trail instead of two spellings of it.
+        self.assertEqual(result.matched_terms, ("geologic section",))
+        # The contradicting page text is kept as a lead rather than discarded.
+        self.assertEqual(result.hint_type, "borehole_log")
 
     def test_equal_strength_uses_specificity_order(self) -> None:
         result = classify_figure(
@@ -368,7 +373,7 @@ class ClassificationPriorityTests(unittest.TestCase):
 
         self.assertEqual(result.source_type, "borehole_log")
         self.assertEqual(result.score, 0.8)
-        self.assertEqual(result.matched_terms, ("borehole log",))
+        self.assertEqual(result.matched_terms, ("bore log",))
 
 
 if __name__ == "__main__":
