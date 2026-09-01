@@ -16,6 +16,17 @@ FastAPI Cloud action, Docker pull, or remote CI run was attempted during this wo
 must not be downloaded to the local workstation. Modal and model investigation is intentionally
 deferred until the user runs the deployment and returns concrete logs or failures.
 
+The manual GitHub Actions boundary uses protected GitHub environment `modal-production`. Its
+GitHub secrets are exactly `MODAL_ID` and `MODAL_ID_SECRET`, mapped only at runtime to
+`MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. It rejects refs other than `refs/heads/main` and targets
+Modal environment `main` explicitly. Modal named Secret and Volume lookups are environment-scoped,
+so `huggingface-secret`, `georeport3d-hf-cache`, and `georeport3d-vllm-cache` refer to resources in
+that `main` environment.
+
+No live Modal verification was performed for the workflow hardening. Source contracts cannot
+prove credentials, Modal SDK behavior, an image build, model access, GPU fit, inference, cost, or
+scale-to-zero; those remain separately authorized target-environment gates.
+
 An unchecked item in `docs/15_DEVELOPER_CHECKLIST.md` means **not yet proven in the required
 environment**. It is not automatically a test failure. A failed gate requires an attempted check
 and recorded failing evidence; a deferred gate has not been attempted because its environment or

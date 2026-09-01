@@ -150,6 +150,7 @@ class ModalInferenceProvider:
             metadata["provider"] != "modal"
             or not isinstance(returned_model_id, str)
             or not returned_model_id.strip()
+            or returned_model_id != self._model_id
             or not versions_match
         ):
             raise _invalid_response()
