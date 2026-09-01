@@ -25,13 +25,17 @@ class GPUProfile:
         object.__setattr__(self, "usd_per_hour", rate)
 
 
-L4 = GPUProfile("L4", 0.000222 * 3600)
+# Stored as exact hourly literals rather than as `per_second * 3600`. That product is
+# not always exact in binary floating point: 0.000542 * 3600 is 1.9511999999999998,
+# and since pricing converts through `str()`, the stray digits would survive into
+# every amount billed on that GPU.
+L4 = GPUProfile("L4", 0.7992)  # $0.000222/sec
 # Modal's published per-second price, checked 2026-09-01. L40S costs 2.44x the L4
 # but carries roughly 2.9x the memory bandwidth, so decode - which is bandwidth
 # bound - is slightly cheaper per token, not dearer. The decisive difference is
 # memory: the 23.4 GB checkpoint leaves almost nothing for a KV cache on a 24 GB
 # L4, and 48 GB leaves room for one, which is what makes concurrency possible.
-L40S = GPUProfile("L40S", 0.000542 * 3600)
+L40S = GPUProfile("L40S", 1.9512)  # $0.000542/sec
 
 PROFILES: dict[str, GPUProfile] = {profile.name: profile for profile in (L4, L40S)}
 
