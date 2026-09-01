@@ -164,18 +164,73 @@ of our own is published there.
 - **Step 1 may reshuffle Phase 1.** The full test suite has never been run. Real
   breakage gets reported before feature work begins, not folded in silently.
 
-## Open risks found while verifying the document backend
+## Document backend: risks measured against a real report
 
-- **Docling layout detection was not reproducible on a synthetic PDF.** Three runs of
-  the identical file with identical options recovered page 1 only, page 2 only, and
-  both. A fixture of bare text lines is out of distribution for a layout model trained
-  on real reports, so this may not occur on genuine documents — but it must be measured
-  before the cache is trusted, because the cache key in `georeport3d/services/cache.py`
-  assumes a given document and preprocess version always yield the same parse. If the
-  parser is nondeterministic on real reports, cached entries can disagree with a fresh
-  run. Verify with a real geotechnical PDF during step 16, and only then decide whether
-  the parse output itself needs to be content-hashed into the cache key.
-- **Text can be dropped without any error.** Docling attaches text to detected regions,
-  so a page whose layout detection fails reports no text at all rather than failing.
-  A borehole log could go unrouted because the words naming it never reached the
-  classifier. Needs a real-document benchmark before extraction accuracy is claimed.
+Both risks below were opened against a synthetic fixture and have now been measured on
+a real 105-page geotechnical baseline report (DART D2, 20% design) using
+`deployment/docling_bench.py` on Modal — three parses per run, fresh converter each
+time. The report is third-party and gitignored, so these findings are the retained
+evidence, not the document.
+
+- **✅ Closed — layout detection is reproducible on real documents.** Three runs
+  produced zero structural differences: identical page count, per-page text hashes,
+  region counts, bounding boxes, and captions. The nondeterminism seen earlier was an
+  artefact of the synthetic fixture — bare text lines are out of distribution for a
+  layout model trained on real reports. Determinism also held with the OCR recovery
+  pass active. The cache key in `georeport3d/services/cache.py` may therefore keep
+  assuming that a given document and preprocess version yield the same parse; the parse
+  output does not need to be content-hashed into the key.
+- **⚠️ Confirmed and mitigated, not eliminated — text was silently dropped.** The risk
+  was real and worse than described. Twenty-one pages returned under 100 characters
+  against a document median of 2,584, and the ten worst were the report's primary
+  geological source: the geologic map (p80) and the nine general geologic profile sheets
+  (p83–91) returned 3–88 characters and **zero regions**. The pipeline was blind to the
+  subsurface interpretation, with no bounding box for any citation to point at, and
+  reported no error while doing it.
+
+  Mitigated in `document/` v2 by three changes, each verified on the same report:
+  structural sparse-page triage (`SPARSE_TEXT_CHARS`, absolute rather than relative,
+  because a relative threshold flags nothing on a fully scanned document), an adaptive
+  second OCR pass over only the sparse pages, and a whole-page fallback region so a
+  sheet the layout model saw nothing on is still citable. Pages under 100 characters
+  fell from 21 to 3, and all three remaining are genuine section dividers. The drawing
+  sheets went from 3–88 characters and no region to 1,287–1,872 characters with one
+  region each. Cost: 2.9× parse time.
+
+  It is mitigated rather than closed because the fallback is a whole page, not a located
+  region, so a citation against one is coarser than a citation against a detected figure.
+  `ParsedFigure.origin` records which kind a region is precisely so this stays visible
+  downstream rather than being averaged away.
+
+- **⚠️ New — page text cannot identify a region.** Not previously on this list, and only
+  visible against a real document. v1 assigned a geological identity whenever a
+  vocabulary term appeared anywhere in a page's text. On this report that produced
+  nineteen `borehole_log` regions of which **nineteen were wrong**: every one sat on a
+  page of body prose that merely discussed boring logs, and not one was a borehole log.
+  In reports of this genre the phrase appears on dozens of narrative pages.
+
+  Fixed in v2 (`PREPROCESS_VERSION` bumped, since it is part of the cache key):
+  identification comes only from a region's own caption; page text can corroborate a
+  caption but no longer name a region alone, and is retained as an auditable `hint` when
+  it stands alone. False `borehole_log` routings went 19 → 0, and `map` went from 5 (one
+  correct) to 1 (the correct one). The single exception is a whole-page fallback region,
+  where the page *is* the region and its text is the sheet's own title block.
+
+- **⚠️ Open — the vocabulary is a fallback, not the mechanism.** `document/terms.py`
+  now normalizes Unicode, folds regional and morphological variants, and carries terms
+  in five languages, which is what made the US spellings on this report ("geologic",
+  "boring log", "profile") match at all when the v1 UK-only vocabulary missed every one.
+  But no term table generalizes to every house style, language, and drafting convention
+  in this genre. The mechanism that does generalize is structural and language-free:
+  sparse text plus no detected regions implies a drawing sheet, which routes to the
+  vision model. The vocabulary should stay a cheap prefilter and a source of audit
+  hints, and must not become the thing accuracy depends on.
+
+- **⚠️ Open, pending step 14 — whether OCR should be on by default.** The recovery pass
+  is what makes those ten sheets readable today, and it costs 2.9× parse time. But
+  `unsloth/Qwen3.6-27B-NVFP4` is a vision-language model, so it can read a rendered
+  sheet directly, with spatial layout intact and without OCR's second error stage —
+  which on this report already showed transcription damage (a dropped apostrophe in the
+  offset `151' RT`). If the vision model reads a geologic profile well, OCR becomes an
+  optional prefilter and the default should flip to off. That cannot be decided without
+  the step-14 deploy, so the default stays on until it is measured.
