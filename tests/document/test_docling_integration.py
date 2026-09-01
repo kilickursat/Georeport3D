@@ -41,7 +41,7 @@ def report(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
-def test_real_backend_produces_a_cited_inventory(report: Path) -> None:
+def test_real_backend_produces_a_pagination_honest_inventory(report: Path) -> None:
     parsed = DoclingDocumentParser().parse(report)
     inventory = build_inventory("doc-real", "sha-real", parsed)
 
@@ -52,12 +52,19 @@ def test_real_backend_produces_a_cited_inventory(report: Path) -> None:
     text = " ".join(page.text for page in inventory.pages).casefold()
     assert "bh-07" in text
 
-    # Every routed region must cite a real page of this document.
+    # DOCX has no fixed printed pages. The inventory retains routed regions but
+    # refuses to manufacture page evidence until the durable schema can carry a
+    # synthetic-pagination marker.
     page_numbers = {page.page_number for page in inventory.pages}
     for figure in inventory.candidates():
-        evidence = inventory.evidence_for(figure)
-        assert evidence.document_id == "doc-real"
-        assert evidence.page_number in page_numbers
+        page = next(page for page in inventory.pages if page.page_number == figure.page_number)
+        if page.has_source_pagination:
+            evidence = inventory.evidence_for(figure)
+            assert evidence.document_id == "doc-real"
+            assert evidence.page_number in page_numbers
+        else:
+            with pytest.raises(ValueError, match="synthetic"):
+                inventory.evidence_for(figure)
 
 
 def test_real_backend_routes_the_borehole_log_text(report: Path) -> None:

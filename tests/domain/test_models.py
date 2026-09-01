@@ -1,3 +1,5 @@
+import math
+
 import pytest
 from pydantic import ValidationError
 
@@ -25,3 +27,14 @@ def test_interval_requires_evidence() -> None:
 def test_bbox_is_ordered() -> None:
     with pytest.raises(ValidationError, match="bbox"):
         Evidence(document_id="doc", page_number=1, source_type="figure", bbox=(10, 10, 5, 20))
+
+
+@pytest.mark.parametrize("non_finite", [math.nan, math.inf, -math.inf])
+def test_bbox_must_be_finite(non_finite: float) -> None:
+    with pytest.raises(ValidationError, match="finite"):
+        Evidence(
+            document_id="doc",
+            page_number=1,
+            source_type="figure",
+            bbox=(non_finite, 0.0, non_finite, 1.0),
+        )
