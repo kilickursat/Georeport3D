@@ -269,14 +269,21 @@ def test_a_miss_runs_the_pipeline_and_records_what_it_spent(
     provider = _RecordingProvider(
         InferenceResult(ok=True, metadata=_metadata(settings), output=output)
     )
-    controller = _controller(session_factory, provider)
+    # A stated clock, because usage records the real elapsed interval and a fake
+    # provider returns in microseconds. That prices below the sixth decimal the
+    # column stores, so the recorded spend would round to zero while the outcome
+    # still reported a non-zero value, and the comparison below would be between
+    # two things that are not the same number.
+    controller = _controller(
+        session_factory, provider, monotonic=_SequenceClock(0.0, 30.0)
+    )
 
     outcome = _run(controller, document_id, digest)
 
     assert outcome.state == "COMPLETED"
     assert outcome.cache_hit is False
     assert outcome.output == output
-    assert outcome.actual_usd is not None and outcome.actual_usd > 0
+    assert outcome.actual_usd == Decimal("0.00666")
     assert len(provider.calls) == 1
 
     with unit_of_work(session_factory) as session:
