@@ -74,9 +74,15 @@ class CachePolicy(BaseModel):
 
 
 class ModalPolicy(BaseModel):
-    gpu: Literal["L4"] = "L4"
+    # Constrained to GPUs this project has a published billing rate for, because
+    # `georeport3d.services.budget.profile_for` must be able to price whatever is
+    # configured here. Adding a GPU means adding its rate first.
+    gpu: Literal["L4", "L40S"] = "L40S"
     min_containers: Literal[0] = 0
-    max_containers: Literal[1] = 1
+    # Two containers, so a second request is served while the first is busy rather
+    # than queued behind it. Still bounded: the cap is what stops a burst of uploads
+    # from opening GPUs faster than the budget can absorb them.
+    max_containers: Literal[1, 2] = 2
     buffer_containers: Literal[0] = 0
     scaledown_window_seconds: PositiveInt = 10
     timeout_seconds: PositiveInt = 900

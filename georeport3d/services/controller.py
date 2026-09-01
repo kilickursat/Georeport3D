@@ -42,7 +42,7 @@ from georeport3d.inference.base import (
     InferenceResult,
     InferenceUnavailableError,
 )
-from georeport3d.services.budget import L4, BudgetLedger, GPUProfile
+from georeport3d.services.budget import BudgetLedger, GPUProfile, profile_for
 from georeport3d.services.cache import CacheKeyParts, make_cache_key
 from georeport3d.services.job_state import (
     GPU_SLOT_STATES,
@@ -101,7 +101,10 @@ class JobController:
         policy: Policy,
         settings: Settings,
         ledger: BudgetLedger,
-        profile: GPUProfile = L4,
+        # Defaults to the GPU the policy actually deploys, so billing cannot drift
+        # from the hardware. Pinning a profile here silently instead would let a
+        # policy change to a dearer GPU go on being billed at the old rate.
+        profile: GPUProfile | None = None,
         # Injected so a test can state elapsed time exactly, and monotonic so a
         # clock adjustment during a long call cannot produce a negative duration
         # that would under-bill the budget.
@@ -112,7 +115,7 @@ class JobController:
         self._policy = policy
         self._settings = settings
         self._ledger = ledger
-        self._profile = profile
+        self._profile = profile or profile_for(policy.modal.gpu)
         self._monotonic = monotonic
 
     # -- key derivation -------------------------------------------------------
