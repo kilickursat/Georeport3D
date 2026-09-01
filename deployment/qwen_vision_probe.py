@@ -100,7 +100,6 @@ def read_sheets() -> dict:
     import base64
     import os
     import time
-    from io import BytesIO
 
     import torch
     from vllm import LLM, SamplingParams
@@ -139,13 +138,10 @@ def read_sheets() -> dict:
     }
     print(f"memory: {memory}", flush=True)
 
-    from PIL import Image
-
     sampling = SamplingParams(temperature=0.0, max_tokens=MAX_OUTPUT_TOKENS)
     answers: dict[int, str] = {}
     durations: dict[int, float] = {}
     for page, encoded in rendered.items():
-        pil = Image.open(BytesIO(base64.b64decode(encoded))).convert("RGB")
         call_started = time.monotonic()
         try:
             outputs = llm.chat(
@@ -154,7 +150,13 @@ def read_sheets() -> dict:
                         "role": "user",
                         "content": [
                             {"type": "text", "text": PROMPT},
-                            {"type": "image_pil", "image_pil": pil},
+                            # The data-URI form rather than `image_pil`: it is the
+                            # documented content type and is accepted across vLLM
+                            # versions, so a version skew cannot cost a whole model load.
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{encoded}"},
+                            },
                         ],
                     }
                 ],

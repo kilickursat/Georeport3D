@@ -31,7 +31,13 @@ import re
 import unicodedata
 from typing import Final, Literal
 
-SourceType = Literal["borehole_log", "section", "map", "table", "figure", "other"]
+# `drawing_sheet` is structural, not geological: it says a region is a full sheet the
+# layout model found nothing to detect on, and deliberately says nothing about what is
+# drawn there. It carries no vocabulary, because it is decided by shape rather than by
+# words, which is what lets it hold for a report in a language this table does not cover.
+SourceType = Literal[
+    "borehole_log", "section", "map", "table", "figure", "drawing_sheet", "other"
+]
 
 # Applied to normalized text, longest key first, on word boundaries.
 #
