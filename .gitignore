@@ -19,3 +19,12 @@ build/
 .superpowers/
 .agents/
 *.log
+
+# Raw benchmark output: regenerable, and it quotes third-party report text.
+docling_bench_result.json
+docling_ocr_probe_result.json
+ocr_comparison_result.json
+
+# Per-machine agent config, not a project setting.
+.claude/settings.local.json
+.claude/skills/

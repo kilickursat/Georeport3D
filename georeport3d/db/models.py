@@ -20,6 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -200,6 +201,10 @@ class InferenceJob(Base):
     )
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    # The canonical work identity this job was admitted for. Nullable because rows
+    # created before the identity was persisted have none; every controller-created
+    # job supplies one.
+    cache_key: Mapped[str | None] = mapped_column(String(64))
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     model_id: Mapped[str] = mapped_column(String(255), nullable=False)
     model_revision: Mapped[str | None] = mapped_column(String(255))
@@ -220,6 +225,21 @@ class InferenceJob(Base):
         CheckConstraint("reserved_usd >= 0", name="reserved_usd_nonnegative"),
         Index("ix_inference_jobs_document_id", "document_id"),
         Index("ix_inference_jobs_state", "state"),
+        # Single-flight, enforced by the database rather than by the caller: at most
+        # one live job may exist per canonical cache key. Two requests that arrive
+        # together for identical work would otherwise each authorize a GPU and pay
+        # twice for one result. Terminal rows are excluded so the same work can be
+        # run again later once it has settled.
+        Index(
+            "uq_inference_jobs_live_cache_key",
+            "cache_key",
+            unique=True,
+            postgresql_where=text(
+                "cache_key IS NOT NULL AND state NOT IN "
+                "('COMPLETED', 'REJECTED', 'CANCELLED', 'FAILED', "
+                "'BUDGET_EXCEEDED', 'TIMEOUT')"
+            ),
+        ),
     )
 
 
@@ -227,8 +247,11 @@ class UsageRecord(Base):
     __tablename__ = "usage_records"
 
     id: Mapped[UUID] = _uuid_column()
+    # RESTRICT, not CASCADE. A usage record is an accounting fact about money that
+    # was actually spent, so deleting the job or its document must not erase it.
+    # Removing settled spend would free budget that is already gone.
     inference_job_id: Mapped[UUID] = mapped_column(
-        ForeignKey("inference_jobs.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("inference_jobs.id", ondelete="RESTRICT"), nullable=False
     )
     gpu_profile: Mapped[str] = mapped_column(String(64), nullable=False)
     actual_seconds: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)

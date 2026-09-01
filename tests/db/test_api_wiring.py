@@ -226,15 +226,25 @@ def test_budget_and_job_status_use_durable_rows(
             Decimal("0.100000"),
         )
 
-    client = _client(session_factory, tmp_path)
-    budget = client.get("/budget")
-    job = client.get(f"/jobs/{active_job.id}")
+    try:
+        client = _client(session_factory, tmp_path)
+        budget = client.get("/budget")
+        job = client.get(f"/jobs/{active_job.id}")
 
-    assert budget.status_code == 200
-    assert budget.json()["spent_usd"] == float(before.settled_usd + Decimal("0.100000"))
-    assert budget.json()["reserved_usd"] == float(
-        before.reserved_usd + Decimal("0.250000")
-    )
-    assert job.status_code == 200
-    assert job.json()["job_id"] == str(active_job.id)
-    assert job.json()["state"] == "GPU_RUNNING"
+        assert budget.status_code == 200
+        assert budget.json()["spent_usd"] == float(before.settled_usd + Decimal("0.100000"))
+        assert budget.json()["reserved_usd"] == float(
+            before.reserved_usd + Decimal("0.250000")
+        )
+        assert job.status_code == 200
+        assert job.json()["job_id"] == str(active_job.id)
+        assert job.json()["state"] == "GPU_RUNNING"
+    finally:
+        # This job has to be live for the assertions above, but the database is
+        # shared across the whole integration run and holds a real GPU-slot count.
+        # Leaving it in GPU_RUNNING consumes a slot for every later test, which is
+        # what `max_concurrent_gpu_jobs` then refuses.
+        with unit_of_work(session_factory) as session:
+            InferenceJobRepository(session).set_state(
+                active_job.id, "FAILED", error_code="TEST_CLEANUP"
+            )
