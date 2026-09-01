@@ -39,6 +39,15 @@ TERMINAL_STATES: Final[frozenset[str]] = frozenset(
 
 INITIAL_STATE: Final[JobState] = "QUEUED"
 
+# States in which a job holds a GPU slot. A job is counted from the moment it is
+# authorized rather than when it starts running, because the slot is spoken for as
+# soon as the reservation exists.
+GPU_SLOT_STATES: Final[frozenset[str]] = frozenset({"GPU_AUTHORIZED", "GPU_RUNNING"})
+
+
+class StaleJobState(RuntimeError):
+    """A transition was attempted from a state the job is no longer in."""
+
 # States from which a running job may still be abandoned by the operator or by a
 # failure. A job already past PERSISTING has written its result, so it settles as
 # COMPLETED or FAILED rather than being cancelled.
@@ -48,8 +57,17 @@ _TRANSITIONS: Final[dict[str, tuple[str, ...]]] = {
     "QUEUED": ("PRECHECKING", "REJECTED", *_ABANDONABLE),
     # Precheck decides admissibility before any lookup or spend.
     "PRECHECKING": ("CACHE_LOOKUP", "REJECTED", "BUDGET_EXCEEDED", *_ABANDONABLE),
-    # A cache hit settles the job without ever authorising a GPU.
-    "CACHE_LOOKUP": ("GPU_AUTHORIZED", "COMPLETED", "BUDGET_EXCEEDED", *_ABANDONABLE),
+    # A cache hit settles the job without ever authorising a GPU. REJECTED is
+    # reachable because admission now happens after the lookup: a miss that policy
+    # refuses - unconfirmed spend, no free GPU slot - is refused from here, having
+    # already established that the answer was not already known.
+    "CACHE_LOOKUP": (
+        "GPU_AUTHORIZED",
+        "COMPLETED",
+        "REJECTED",
+        "BUDGET_EXCEEDED",
+        *_ABANDONABLE,
+    ),
     "GPU_AUTHORIZED": ("GPU_RUNNING", *_ABANDONABLE),
     "GPU_RUNNING": ("VALIDATING", *_ABANDONABLE),
     # Validation failure is terminal: a result that fails schema or provenance
