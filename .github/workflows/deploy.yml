@@ -9,14 +9,6 @@ on:
         description: 'Type "deploy" to confirm. Building and registering the app can incur charges before any inference.'
         required: true
         default: ""
-      model_id:
-        description: "Hugging Face repository the container serves"
-        required: true
-        default: "unsloth/Qwen3.6-27B-NVFP4"
-      model_revision:
-        description: "Exact revision to pin. Never a moving ref."
-        required: true
-        default: "ccdaab7e68af2409599b8949a8f2685703c9bae5"
 
 permissions:
   contents: read
@@ -31,22 +23,30 @@ jobs:
     name: modal deploy
     runs-on: ubuntu-latest
     environment: modal-production
+    env:
+      MODAL_ENVIRONMENT: main
     steps:
       - name: Require explicit confirmation
-        if: inputs.confirm != 'deploy'
+        env:
+          DEPLOY_CONFIRM: ${{ inputs.confirm }}
         run: |
-          echo "::error::Confirmation must be exactly 'deploy'."
-          exit 1
+          if [[ "${DEPLOY_CONFIRM}" != "deploy" ]]; then
+            echo "::error::Confirmation must be exactly 'deploy'."
+            exit 1
+          fi
 
-      - name: Require a moving ref to be rejected
-        if: inputs.model_revision == 'main' || inputs.model_revision == 'HEAD'
+      - name: Require the main branch
+        env:
+          DEPLOY_REF: ${{ github.ref }}
         run: |
-          echo "::error::model_revision must be an exact commit, not a moving ref."
-          exit 1
+          if [[ "${DEPLOY_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Modal production deployment requires refs/heads/main."
+            exit 1
+          fi
 
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.11.33"
           enable-cache: true
@@ -54,26 +54,21 @@ jobs:
       - name: Sync locked dependencies
         run: uv sync --frozen --python 3.13 --extra modal
 
-      - name: Record deploy identity
-        run: |
-          echo "commit:   ${{ github.sha }}"
-          echo "model:    ${{ inputs.model_id }}"
-          echo "revision: ${{ inputs.model_revision }}"
-          uv run --python 3.13 python -c "import modal; print('modal SDK:', modal.__version__)"
-
       # Registers the app declarations. It does not call QwenWorker.extract_batch,
       # so no GPU is allocated and no inference runs. Weights are fetched into the
       # Modal volume on the first authorized invocation, never onto a runner.
       - name: Deploy the worker
         env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-          MODEL_ID: ${{ inputs.model_id }}
-          MODEL_REVISION: ${{ inputs.model_revision }}
-        run: uv run --python 3.13 modal deploy deployment/modal_worker.py
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_ID_SECRET }}
+        run: uv run --python 3.13 modal deploy --env main deployment/modal_worker.py
 
-      - name: Rollback identifier
-        if: always()
+      # A normal step runs only after the deploy succeeds. Identity comes from
+      # reviewed source, never from a workflow input or shell interpolation.
+      - name: Record deployed identity and rollback
+        env:
+          DEPLOYED_COMMIT: ${{ github.sha }}
         run: |
-          echo "Roll back by re-running this workflow from the previous green commit on main."
-          echo "deployed_commit=${{ github.sha }}"
+          echo "deployed_commit=${DEPLOYED_COMMIT}"
+          uv run --python 3.13 python -c "from georeport3d.model_identity import MODEL_ID, MODEL_REVISION; print(f'deployed_model={MODEL_ID}'); print(f'deployed_revision={MODEL_REVISION}')"
+          echo "Roll back by reverting the deployment commit on main, then re-run this workflow from refs/heads/main."

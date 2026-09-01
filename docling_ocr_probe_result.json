@@ -1,0 +1,174 @@
+{
+  "page_range": [
+    79,
+    91
+  ],
+  "results": [
+    {
+      "label": "ocr_off",
+      "pages": [
+        {
+          "page": 79,
+          "chars": 43,
+          "regions": 1,
+          "sample": "FIGURE 2 - 1. DART D2 PROJECT LOCATION PLAN"
+        },
+        {
+          "page": 80,
+          "chars": 3,
+          "regions": 0,
+          "sample": "4-1"
+        },
+        {
+          "page": 81,
+          "chars": 3,
+          "regions": 23,
+          "sample": "7-1"
+        },
+        {
+          "page": 82,
+          "chars": 77,
+          "regions": 1,
+          "sample": "REACH 1 | REACH 2 | REACH 3 | REACH 4 | REACH 5 | REACH 6 | REACH 7 | REACH 8 | REACH 10 | REACH 9 | 7-2 | 7-1"
+        },
+        {
+          "page": 83,
+          "chars": 6,
+          "regions": 0,
+          "sample": "7-1 | 8-1"
+        },
+        {
+          "page": 84,
+          "chars": 6,
+          "regions": 0,
+          "sample": "7-1 | 8-1"
+        },
+        {
+          "page": 85,
+          "chars": 6,
+          "regions": 0,
+          "sample": "7-1 | 8-1"
+        },
+        {
+          "page": 86,
+          "chars": 6,
+          "regions": 0,
+          "sample": "7-1 | 8-1"
+        },
+        {
+          "page": 87,
+          "chars": 6,
+          "regions": 0,
+          "sample": "7-1 | 8-1"
+        },
+        {
+          "page": 88,
+          "chars": 6,
+          "regions": 0,
+          "sample": "7-1 | 8-1"
+        },
+        {
+          "page": 89,
+          "chars": 6,
+          "regions": 0,
+          "sample": "7-1 | 8-1"
+        },
+        {
+          "page": 90,
+          "chars": 6,
+          "regions": 0,
+          "sample": "7-1 | 8-1"
+        },
+        {
+          "page": 91,
+          "chars": 6,
+          "regions": 0,
+          "sample": "7-1 | 8-1"
+        }
+      ]
+    },
+    {
+      "label": "ocr_on",
+      "pages": [
+        {
+          "page": 79,
+          "chars": 984,
+          "regions": 1,
+          "sample": "FIGURE 2 - 1. DART D2 PROJECT LOCATION PLAN | DALL RODGERS FWY | CEDAR SPRI | Victory | Station | 7 | 13 SYX3S1T | N FIELD ST | 366 | ROSS AVE | JACK EVANS ST | N STEMMONS FWY | 354 | N HARWOOD ST | Pearl/Arts | District | 366 | Station | FLORENCEST | GASTONAV"
+        },
+        {
+          "page": 80,
+          "chars": 1576,
+          "regions": 0,
+          "sample": "17-FEB-2020 18:19 | ksheffy | Defoult REV | GC4-0080 | DWG No. | Fort Wsorth | onar Airpor Garland | AMEND | DATE | DESCRIPT1ON | Lemmon | ENG | DHK | APP | Mesquite | Paciti | Missoun | Qal | Dallas | 495 | (Henloy) | City of Dallas | Railroad | Qal | Redbird"
+        },
+        {
+          "page": 81,
+          "chars": 3853,
+          "regions": 23,
+          "sample": "pw://pwhdruscen01:HDR_US_Central_01/Documenis/Dallas_Area_Rapid_Transit_DART_Dallas_TX/DART_General_Plonning_CS_VI/6.O_CAD_BIM/6.2_Work_In_Progress/TO_39_D2_Subway_Proj_Dev/6. 18-FEB-202010:32 18-FEB-2020 10:32 | HC1-0001 | NOTES: NOTES: | BORING LOGS, LABORAT"
+        },
+        {
+          "page": 82,
+          "chars": 1439,
+          "regions": 1,
+          "sample": "C:\\pwworking\\cen1ro101\\d0894629\\CBD2-GC2-1000.200 ksheffy | SDATES | LAMAR | CANTON | REACH 1 | REACH 2 | REACH 3 | REACH 4 | REACH 5 | REACH 6 | REACH 7 | REACH 8 | REACH 10 | REACH 9 | 7-2 | 7-1 | R-2 | 20+0022+00 | MUSEUM WAY | RIVER | SCALE (IN FEET) | 100"
+        },
+        {
+          "page": 83,
+          "chars": 1172,
+          "regions": 0,
+          "sample": "18-FEB-2020 09:56 | ksheffy | Defoult GC4-0031 | 460 | 460 | 450 | 440 | 450 | 440 | 430 | 420 #8 TURNOUT | 12LT | 430 | FILL | ALLUVIUM | 420 | 410 | 410 | 400 | WEATHERED | 390 | 400 | 390 | 380 | 380 | 370 | 370 | 360 | 360 | 350 | 350 | 340 | 340 | 330 | 3"
+        },
+        {
+          "page": 84,
+          "chars": 1646,
+          "regions": 0,
+          "sample": "18-FEB-2020 10:26 | ksheffy | Defouli GC4-0032 | 460 | DWG No. | LANE | 450 | 440 | 4\u2032RT | 460 | 450 | 440 | 430 | 430 | 420 | 420 | 410 | 400 | 390 | 380 | 370 | 360 | 350 | 340 | 330 | 320 | 310 | 417.20 | 22\u2032RT | XN=65 | N=50\u00aa | 001/001 | 100/100 | :00/97 |"
+        },
+        {
+          "page": 85,
+          "chars": 1518,
+          "regions": 0,
+          "sample": "18-FEB-2020 10:08 | ksheffy | Defouli REV | GC4-0033 | 460 | 450 | 460 | 450 | 440 | 440 | 430 | 430 | 420 | 420 | 410 | 400 | 390 | 380 | 370 | 360 | 350 | 340 | 330 | 320 | 310 | 410 | 400 | 390 | 380 | 370 | 360 | 350 | 340 | 330 | 320 | 310 | 424.52 | 3+00"
+        },
+        {
+          "page": 86,
+          "chars": 1619,
+          "regions": 0,
+          "sample": "18-FEB-2020 10:11 | Defouli REV | GC4-0034 | 460 | 450 | 440 | 460 | 450 | 440 | 430 | 430 | 420 | 410 | 400 | 390 | 22LT | OG NO | 103 | N=11 | N=8 | CPACIFIC AVE | C LIGHT RAIL | LIGHT RAIL | 35LT | N= | 7' RT | TS-104 | N=7 | 4/4/17 | 4/8/2019(S) | 8/20/19("
+        },
+        {
+          "page": 87,
+          "chars": 1339,
+          "regions": 0,
+          "sample": "18-FEB-2020 10:13 | ksheffy | Defouli GC4-0035 | 450 | 440 | 430 | 450 | 440 | 430 | 420 | 420 | 410 | T-201 | 10/17/2017 | 410 | 400 | 390 | 380 | 370 | 360 | 350 | 340 | 330 | 320 | 361.88 | 360.64 | 45\u2032RT | F | N=8 | L6/001 | 100/88 | 99/97 | 100/56 | 98/97"
+        },
+        {
+          "page": 88,
+          "chars": 1637,
+          "regions": 0,
+          "sample": "18-FEB-2020 10:15 | ksheffy | Defoult REV | GC4-0036 | 460 | 450 | 17 | 460 | 450 | 440 | 430 | 440 | 430 | 420 | 410 | 400 | 390 | 380 | 370 | 360 | 350 | 340 | 330 | 320 | 352.94 | REACK | TS-202 | 12/31/2018(S) | 151RT | FILL | ST | P | ST | 5/2/2017 | 4/8/"
+        },
+        {
+          "page": 89,
+          "chars": 1661,
+          "regions": 0,
+          "sample": "18-FEB-2020 10:17 | ksheffy | Defouli REV | GC4-0037 | 480 | 470 | 460 | 12/5/2019(S) | C | MAIN | 480 | 470 | 460 | 450 | 12/5/2019(D) | 450 | 440 | 430 | 93 | 420 | 86 | 100 | 410 | 400 | 390 | 86 | G6 | 93 | \u22206 | 380 | 9 | 80 | 83 | 370 | 90 | 360 | 350 | 6"
+        },
+        {
+          "page": 90,
+          "chars": 1588,
+          "regions": 0,
+          "sample": "18-FEB-2020 10:27 | ksheffy | Defoult REV | O NO | GC4-0038 | 480 | 470 | 460 | G | SB IH 345 | NB IH 345 | EXISTING | 10/3/2017 | 480 | 470 | 460 | 450 | 440 | 430 | 420 | 410 | 400 | 390 | 450 | 440 | 430 | 420 | 410 | 400 | 390 | 380 | 370 | 360 | 350 | 340"
+        },
+        {
+          "page": 91,
+          "chars": 1171,
+          "regions": 0,
+          "sample": "18-FEB-2020 10:22 | ksheffy | Defoult GC4-0039 | 480 | 470 | 480 | 470 | 460 | O NO | FILL | ALLUVIUM | C SB GOOD LATIMER EXPRESSWAY | #10 TURNOUT | EXISTING | 450 | LIM\u00c9STONE | 460 | 450 | 440 | 440 | 430 | 430 | 420 | 420 | 410 | 410 | 400 | 400 | 390 | 390 "
+        }
+      ]
+    }
+  ]
+}
