@@ -12,6 +12,12 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from georeport3d.model_identity import (
+    MODEL_ID,
+    MODEL_REVISION,
+    validate_model_revision,
+)
+
 CacheKeyField = Literal[
     "document_sha256",
     "figure_sha256",
@@ -89,8 +95,8 @@ class Settings(BaseSettings):
     storage_root: Path = Path(".data/documents")
     policy_path: Path = Path("config/policy.yaml")
     inference_provider: Literal["mock", "modal"] = "mock"
-    model_id: str = "unsloth/Qwen3.6-27B-NVFP4"
-    model_revision: str | None = None
+    model_id: str = MODEL_ID
+    model_revision: str = MODEL_REVISION
     prompt_version: str = "v1"
     preprocess_version: str = "v1"
     modal_app_name: str = "georeport3d-qwen"
@@ -98,10 +104,19 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    @field_validator("model_revision")
+    @classmethod
+    def require_immutable_model_revision(cls, value: str) -> str:
+        return validate_model_revision(value)
+
     @model_validator(mode="after")
     def forbid_mock_in_production(self) -> "Settings":
         if self.app_env == "production" and self.inference_provider == "mock":
             raise ValueError("mock inference is forbidden in production")
+        if self.inference_provider == "modal" and (
+            self.model_id != MODEL_ID or self.model_revision != MODEL_REVISION
+        ):
+            raise ValueError("modal inference requires the source-controlled model identity")
         return self
 
 
