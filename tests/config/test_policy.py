@@ -35,9 +35,9 @@ def _valid_policy_data() -> dict[str, object]:
             "key_fields": CANONICAL_CACHE_KEY_FIELDS.copy(),
         },
         "modal": {
-            "gpu": "L4",
+            "gpu": "L40S",
             "min_containers": 0,
-            "max_containers": 1,
+            "max_containers": 2,
             "buffer_containers": 0,
             "scaledown_window_seconds": 10,
             "timeout_seconds": 900,
@@ -50,9 +50,9 @@ def test_repository_policy_loads() -> None:
     assert policy.budget.global_usd == 230
     assert policy.budget.hard_stop_usd == 220
     assert policy.cache.key_fields == CANONICAL_CACHE_KEY_FIELDS
-    assert policy.modal.gpu == "L4"
+    assert policy.modal.gpu == "L40S"
     assert policy.modal.min_containers == 0
-    assert policy.modal.max_containers == 1
+    assert policy.modal.max_containers == 2
     assert policy.modal.buffer_containers == 0
 
 
@@ -113,7 +113,7 @@ def test_modal_settings_reject_identity_environment_overrides(
     "modal_override",
     [
         pytest.param({"min_containers": 1}, id="nonzero-minimum"),
-        pytest.param({"max_containers": 2}, id="multiple-containers"),
+        pytest.param({"max_containers": 3}, id="too-many-containers"),
         pytest.param({"buffer_containers": 1}, id="nonzero-buffer"),
     ],
 )
