@@ -20,7 +20,7 @@ from typing import Literal
 
 from document.base import FigureKind
 
-PREPROCESS_VERSION = "v1"
+PREPROCESS_VERSION = "v2"
 
 SourceType = Literal["borehole_log", "section", "map", "table", "figure", "other"]
 
@@ -30,8 +30,8 @@ _BOTH_WEIGHT = 0.9
 _ADDITIONAL_TERM_BONUS = 0.05
 _MAX_SCORE = 0.95
 
-# Ordered by specificity: the first class with a match wins, so a borehole log is
-# not reclassified as a generic section because both vocabularies appear on a page.
+# Ordered by specificity. Evidence strength wins across classes; this order breaks
+# exact score ties so a borehole log is not reclassified as a more generic section.
 _RULES: tuple[tuple[SourceType, tuple[str, ...]], ...] = (
     (
         "borehole_log",
@@ -92,7 +92,8 @@ def classify_figure(
     caption_text = (caption or "").casefold()
     body_text = page_text.casefold()
 
-    for source_type, terms in _RULES:
+    candidates: list[tuple[float, int, Classification]] = []
+    for specificity, (source_type, terms) in enumerate(_RULES):
         in_caption = _matches(terms, caption_text)
         in_body = _matches(terms, body_text)
         if not in_caption and not in_body:
@@ -107,7 +108,16 @@ def classify_figure(
 
         matched = tuple(sorted(set(in_caption) | set(in_body)))
         score = min(_MAX_SCORE, base + _ADDITIONAL_TERM_BONUS * (len(matched) - 1))
-        return Classification(source_type=source_type, score=score, matched_terms=matched)
+        candidates.append(
+            (
+                score,
+                -specificity,
+                Classification(source_type=source_type, score=score, matched_terms=matched),
+            )
+        )
+
+    if candidates:
+        return max(candidates, key=lambda candidate: candidate[:2])[2]
 
     # Nothing matched. Fall back to the structural kind the parser reported rather
     # than guessing a geological meaning the document does not support.

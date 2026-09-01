@@ -22,8 +22,8 @@ def test_upload_returns_durable_receipt(client: TestClient, tmp_path) -> None:
     assert len(body["document_id"]) == 32
     assert body["sha256"] == hashlib.sha256(content).hexdigest()
     assert body["size_bytes"] == len(content)
-    assert len(list(tmp_path.glob("*.bin"))) == 1
-    stored_path = tmp_path / f"{body['document_id']}.bin"
+    assert len(list(tmp_path.glob("*.pdf"))) == 1
+    stored_path = tmp_path / f"{body['document_id']}.pdf"
     assert stored_path.read_bytes() == content
 
 
@@ -158,7 +158,7 @@ def test_upload_sanitizes_path_traversal_display_name(
 
     assert response.status_code == 201
     assert response.json()["original_filename"] == "report.pdf"
-    assert len(list(tmp_path.glob("*.bin"))) == 1
+    assert len(list(tmp_path.glob("*.pdf"))) == 1
 
 
 def _client_for(tmp_path, *, max_file_mb: int | None = None) -> TestClient:

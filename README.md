@@ -55,12 +55,12 @@ carries the full register with per-item evidence requirements.
 
 | Component | State |
 | --- | --- |
-| Upload, streaming, SHA-256 hashing, bounded storage | Implemented and tested |
+| Upload, streaming, SHA-256 hashing, bounded storage | Implemented; canonical PDF/DOCX suffixes preserved |
 | Domain models, evidence and depth validation | Implemented and tested |
 | Budget ledger and canonical cache key | Implemented, in-memory only |
 | PostGIS schema and Alembic baseline | Migration verified against PostGIS 17-3.5 in CI |
 | Modal worker declaration (vLLM, one L4, scale-to-zero) | Declared and contract-tested, never deployed |
-| Document pipeline (Docling inventory, figure detection) | Not started |
+| Document pipeline (Docling adapter, inventory, figure routing) | Implemented at code level; not wired to an API route or target-proven |
 | Geology (CRS transforms, borehole geometry) | Not started |
 | Job orchestration and extraction endpoints | Not started |
 | Web application and 3D viewer | Not started |
@@ -115,6 +115,16 @@ document; it never starts inference.
 
 Optional extras: `--extra document` for the Docling pipeline dependencies, `--extra modal` for
 the Modal client SDK.
+
+The document boundary is intentionally conservative. New local uploads are published as
+`<document_id>.pdf` or `<document_id>.docx`, so a fresh process can recover the validated source
+format from durable state. Old `<document_id>.bin` files have no trustworthy persisted format and
+must be re-uploaded or verified and migrated explicitly; the store will not guess from their
+contents. `DoclingDocumentParser` defaults to `max_pages=500`, but this is a **post-conversion**
+guard: it blocks oversized normalized inventories, not Docling's conversion work. DOCX ordinals
+and unplaced PDF content are marked as synthetic per page. Synthetic content remains visible in
+inventory, but durable page evidence is rejected until the evidence schema can store pagination
+truth without pretending an ordinal is a printed source page.
 
 ## Development
 

@@ -8,6 +8,7 @@ tables sit. Interpretation belongs to later stages.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -28,6 +29,10 @@ class UnsupportedDocumentError(DocumentParseError):
     """The file extension is not one of the supported source formats."""
 
 
+class DocumentPageLimitError(DocumentParseError):
+    """The normalized document contains more pages than the parser permits."""
+
+
 @dataclass(frozen=True)
 class ParsedFigure:
     """One figure or table region located on a page."""
@@ -40,6 +45,8 @@ class ParsedFigure:
     def __post_init__(self) -> None:
         if self.page_number < 1:
             raise ValueError("page_number must be >= 1")
+        if self.bbox is not None and not all(math.isfinite(value) for value in self.bbox):
+            raise ValueError("bbox values must be finite")
         if self.bbox is not None and (
             self.bbox[2] < self.bbox[0] or self.bbox[3] < self.bbox[1]
         ):
@@ -53,6 +60,9 @@ class ParsedPage:
     page_number: int
     text: str = ""
     figures: tuple[ParsedFigure, ...] = ()
+    # False when this ordinal was assigned during normalization rather than read
+    # from a fixed-page source.
+    has_source_pagination: bool = True
 
     def __post_init__(self) -> None:
         if self.page_number < 1:
@@ -66,10 +76,10 @@ class ParsedPage:
 class ParsedDocument:
     """A normalized parse result independent of the backend that produced it.
 
-    `has_source_pagination` is false for flow formats such as DOCX, which carry no
-    fixed pages. Content is then collapsed onto a single ordinal page so the evidence
-    chain still resolves, but consumers must not present that number as a printed
-    page of the source.
+    `has_source_pagination` is false when any content has only a synthetic ordinal,
+    including flow formats such as DOCX. Each page carries the same fact at page
+    granularity so mixed PDF content does not erase the truth of its real pages.
+    Consumers must never present a synthetic ordinal as a printed source page.
     """
 
     source_format: SourceFormat
@@ -82,6 +92,13 @@ class ParsedDocument:
             raise ValueError("page numbers must be unique")
         if numbers != sorted(numbers):
             raise ValueError("pages must be ordered by page_number")
+        expected_pagination = all(page.has_source_pagination for page in self.pages)
+        if self.has_source_pagination != expected_pagination:
+            raise ValueError("document pagination must match its pages")
+        if self.source_format == "docx" and any(
+            page.has_source_pagination for page in self.pages
+        ):
+            raise ValueError("DOCX page numbers must be synthetic")
 
 
 class DocumentParser(Protocol):
