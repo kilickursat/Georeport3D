@@ -838,16 +838,17 @@ def test_every_post_invocation_failure_reconciles_measured_usage(
     with unit_of_work(session_factory) as session:
         before = BudgetRepository(session).position(TERMINAL_STATES)
 
-    try:
-        outcome = _run(
-            controller,
-            document_id,
-            digest,
-            idempotency_key=key,
-            estimated_seconds=600.0,
-        )
-    finally:
-        _settle_live_test_job(session_factory, key)
+    # Deliberately not settled here. This test asserts the reservation was released
+    # by reconciliation, and a cleanup running before `after` is measured would
+    # settle an unreleased job and make that assertion pass regardless. Cross-test
+    # hygiene is the truncation fixture's job, not this test's.
+    outcome = _run(
+        controller,
+        document_id,
+        digest,
+        idempotency_key=key,
+        estimated_seconds=600.0,
+    )
 
     usage = _usage_for_job(session_factory, outcome.job_id)
     with unit_of_work(session_factory) as session:
