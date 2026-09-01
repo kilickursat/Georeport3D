@@ -22,7 +22,7 @@ from document.base import (
     UnsupportedDocumentError,
 )
 from document.docling_adapter import DoclingDocumentParser
-from document.inventory import build_inventory
+from document.inventory import DocumentInventory, build_inventory
 from georeport3d.config import Policy, Settings, load_policy
 from georeport3d.db.repositories import (
     BudgetRepository,
@@ -33,6 +33,8 @@ from georeport3d.db.repositories import (
 from georeport3d.db.session import unit_of_work
 from georeport3d.inference.base import InferenceProvider
 from georeport3d.services.budget import BudgetLedger
+from georeport3d.services.controller import JobController
+from georeport3d.services.estimate import estimate_workload
 from georeport3d.services.job_state import TERMINAL_STATES
 from georeport3d.storage.base import (
     DocumentReceipt,
@@ -269,8 +271,13 @@ def create_app(
             return JSONResponse(status_code=status.HTTP_200_OK, content=response)
         return response
 
-    @app.post("/documents/{document_id}/inventory")
-    def inventory_document(document_id: UUID) -> dict[str, object]:
+    def _inventory_for(document_id: UUID) -> DocumentInventory:
+        """Parse one stored document into its inventory, or raise a stable HTTP error.
+
+        Shared by the inventory and estimate routes so an estimate is priced from
+        exactly the regions the inventory reports, rather than from a second parse
+        that could disagree with it.
+        """
         factory = require_database()
         try:
             with unit_of_work(factory) as session:
@@ -326,9 +333,42 @@ def create_app(
                 detail={"code": "DOCUMENT_PARSE_FAILED"},
             ) from exc
 
+        return inventory
+
+    @app.post("/documents/{document_id}/inventory")
+    def inventory_document(document_id: UUID) -> dict[str, object]:
+        inventory = _inventory_for(document_id)
         response = inventory.model_dump(mode="json")
         response["page_count"] = inventory.page_count
         return response
+
+    @app.post("/documents/{document_id}/estimate")
+    def estimate_document(document_id: UUID) -> dict[str, object]:
+        """Price the work before anything authorizes it.
+
+        Free by construction: it parses, counts, and multiplies. No provider is
+        reached, so a user can always see a price without agreeing to pay one.
+
+        `analyze` deliberately does not follow yet. `docs/10_API_AND_JOB_STATE.md`
+        holds it until the server owns a render-and-crop pipeline, prompt
+        construction, and calibrated workload units. Only the fourth prerequisite,
+        the durable controller-safety contract, exists. Exposing it now would leave
+        the client supplying raw model messages, which the same document forbids.
+        """
+        factory = require_database()
+        inventory = _inventory_for(document_id)
+        # The controller owns what a GPU second costs. Pricing the estimate through
+        # it means the number a user confirms and the reservation later taken against
+        # the budget cannot drift apart.
+        controller = JobController(
+            session_factory=factory,
+            provider=provider,
+            policy=policy,
+            settings=settings,
+            ledger=app.state.ledger,
+        )
+        estimate = estimate_workload(inventory, policy, controller.price_usd)
+        return {"document_id": str(document_id), **estimate.as_response()}
 
     @app.get("/jobs/{job_id}")
     def job_status(job_id: UUID) -> dict[str, object]:
