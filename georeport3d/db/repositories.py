@@ -135,27 +135,37 @@ class DocumentRepository:
         sha256: str,
         size_bytes: int,
         state: str = "UPLOADED",
+        *,
+        document_id: UUID | None = None,
     ) -> tuple[Document, bool]:
         """Return the document and whether this call created it.
 
         The same bytes uploaded twice into one project must resolve to the same
         document, otherwise observations would be split across duplicate rows.
         """
-        existing = self.get_by_sha256(project_id, sha256)
-        if existing is not None:
-            return existing, False
-
-        document = Document(
-            id=uuid4(),
-            project_id=project_id,
-            original_filename=original_filename,
-            sha256=sha256,
-            size_bytes=size_bytes,
-            state=state,
-        )
-        self._session.add(document)
+        created_id = self._session.execute(
+            pg_insert(Document)
+            .values(
+                id=document_id or uuid4(),
+                project_id=project_id,
+                original_filename=original_filename,
+                sha256=sha256,
+                size_bytes=size_bytes,
+                state=state,
+            )
+            .on_conflict_do_nothing(index_elements=["project_id", "sha256"])
+            .returning(Document.id)
+        ).scalar_one_or_none()
         self._session.flush()
-        return document, True
+        if created_id is not None:
+            document = self._session.get(Document, created_id)
+            assert document is not None
+            return document, True
+
+        existing = self.get_by_sha256(project_id, sha256)
+        if existing is None:  # pragma: no cover - only on concurrent deletion
+            raise LookupError("document vanished between insert and lookup")
+        return existing, False
 
     def get(self, document_id: UUID) -> Document | None:
         return self._session.get(Document, document_id)
