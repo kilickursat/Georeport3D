@@ -21,9 +21,9 @@ cache:
     - preprocess_version
 
 modal:
-  gpu: L4
+  gpu: L40S
   min_containers: 0
-  max_containers: 1
+  max_containers: 2
   buffer_containers: 0
   scaledown_window_seconds: 10
   timeout_seconds: 900

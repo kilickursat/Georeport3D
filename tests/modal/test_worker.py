@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import runpy
 import subprocess
 import time
 import types
@@ -12,6 +13,9 @@ from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 WORKER_PATH = REPOSITORY_ROOT / "deployment" / "modal_worker.py"
+IDENTITY_PATH = REPOSITORY_ROOT / "georeport3d" / "model_identity.py"
+EXPECTED_MODEL_ID = "unsloth/Qwen3.6-27B-NVFP4"
+EXPECTED_MODEL_REVISION = "ccdaab7e68af2409599b8949a8f2685703c9bae5"
 PURE_HELPERS = {
     "_failure_result",
     "_parse_model_output",
@@ -31,14 +35,15 @@ def _worker_tree() -> ast.Module:
     return ast.parse(_worker_source(), filename=str(WORKER_PATH))
 
 
-def _load_helpers(**overrides: object) -> dict[str, object]:
+def _load_helpers(*extra_helpers: str, **overrides: object) -> dict[str, object]:
     tree = _worker_tree()
     functions = {
         node.name: node
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    missing = sorted(PURE_HELPERS - functions.keys())
+    requested_helpers = PURE_HELPERS | set(extra_helpers)
+    missing = sorted(requested_helpers - functions.keys())
     if missing:
         raise AssertionError(f"worker is missing pure helpers: {', '.join(missing)}")
 
@@ -48,7 +53,7 @@ def _load_helpers(**overrides: object) -> dict[str, object]:
         level=0,
     )
     helper_module = ast.Module(
-        body=[future, *(functions[name] for name in sorted(PURE_HELPERS))],
+        body=[future, *(functions[name] for name in sorted(requested_helpers))],
         type_ignores=[],
     )
     ast.fix_missing_locations(helper_module)
@@ -58,9 +63,14 @@ def _load_helpers(**overrides: object) -> dict[str, object]:
         "subprocess": subprocess,
         "time": time,
         "urllib": urllib,
-        "MODEL_ID": "unsloth/Qwen3.6-27B-NVFP4",
+        "MODEL_ID": EXPECTED_MODEL_ID,
+        "MODEL_REVISION": EXPECTED_MODEL_REVISION,
         "VLLM_PORT": 8000,
         "MAX_OUTPUT_TOKENS": 2500,
+        "MAX_BATCH_SIZE": 8,
+        "MAX_MESSAGES_PER_REQUEST": 32,
+        "MAX_CONTENT_PARTS_PER_MESSAGE": 16,
+        "MAX_CONTENT_CHARS_PER_REQUEST": 4_000_000,
     }
     namespace.update(overrides)
     exec(compile(helper_module, str(WORKER_PATH), "exec"), namespace)
@@ -173,18 +183,34 @@ class _Response:
 
 
 class ModalWorkerContractTests(unittest.TestCase):
+    def test_source_identity_is_exact_and_revision_is_lowercase_commit(self) -> None:
+        self.assertTrue(IDENTITY_PATH.is_file(), "source-controlled identity module is missing")
+
+        identity = runpy.run_path(str(IDENTITY_PATH))
+
+        self.assertEqual(identity["MODEL_ID"], EXPECTED_MODEL_ID)
+        self.assertEqual(identity["MODEL_REVISION"], EXPECTED_MODEL_REVISION)
+        self.assertRegex(identity["MODEL_REVISION"], r"\A[0-9a-f]{40}\Z")
+        validate_revision = identity["validate_model_revision"]
+        self.assertEqual(validate_revision(EXPECTED_MODEL_REVISION), EXPECTED_MODEL_REVISION)
+        for invalid in ["main", "0" * 39, "A" * 40, "g" * 40, 4]:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_revision(invalid)
+
     def test_vllm_command_uses_loopback_nvfp4_and_two_mtp_tokens(self) -> None:
         helpers = _load_helpers()
-        command = helpers["_vllm_command"]("unsloth/Qwen3.6-27B-NVFP4", "revision-1")
+        command = helpers["_vllm_command"](EXPECTED_MODEL_ID, EXPECTED_MODEL_REVISION)
 
         self.assertEqual(
             command,
             [
                 "vllm",
                 "serve",
-                "unsloth/Qwen3.6-27B-NVFP4",
+                EXPECTED_MODEL_ID,
                 "--revision",
-                "revision-1",
+                EXPECTED_MODEL_REVISION,
+                "--tokenizer-revision",
+                EXPECTED_MODEL_REVISION,
                 "--host",
                 "127.0.0.1",
                 "--port",
@@ -284,7 +310,7 @@ class ModalWorkerContractTests(unittest.TestCase):
                 {"role": "user", "content": [{"type": "text", "text": "page"}]},
             ],
             "max_tokens": 9000,
-            "model_revision": "rev-7",
+            "model_revision": EXPECTED_MODEL_REVISION,
             "prompt_version": "prompt-v2",
             "preprocess_version": "pre-v4",
         }
@@ -297,7 +323,7 @@ class ModalWorkerContractTests(unittest.TestCase):
             (
                 request["messages"],
                 2500,
-                "rev-7",
+                EXPECTED_MODEL_REVISION,
                 "prompt-v2",
                 "pre-v4",
             ),
@@ -307,7 +333,7 @@ class ModalWorkerContractTests(unittest.TestCase):
         valid: dict[str, Any] = {
             "messages": [{"role": "user", "content": "page"}],
             "max_tokens": 1,
-            "model_revision": None,
+            "model_revision": EXPECTED_MODEL_REVISION,
             "prompt_version": "prompt-v1",
             "preprocess_version": "pre-v1",
         }
@@ -326,6 +352,8 @@ class ModalWorkerContractTests(unittest.TestCase):
             {**valid, "max_tokens": True},
             {key: value for key, value in valid.items() if key != "max_tokens"},
             {**valid, "model_revision": 4},
+            {**valid, "model_revision": None},
+            {**valid, "model_revision": "0" * 40},
             {**valid, "prompt_version": " "},
             {**valid, "preprocess_version": ""},
         ]
@@ -334,6 +362,70 @@ class ModalWorkerContractTests(unittest.TestCase):
         for index, request in enumerate(invalid_requests):
             with self.subTest(index=index), self.assertRaises(ValueError):
                 helpers["_validate_request"](request)
+
+    def test_validate_request_bounds_message_count_parts_and_total_content(self) -> None:
+        valid: dict[str, Any] = {
+            "messages": [{"role": "user", "content": "page"}],
+            "max_tokens": 1,
+            "model_revision": EXPECTED_MODEL_REVISION,
+            "prompt_version": "prompt-v1",
+            "preprocess_version": "pre-v1",
+        }
+        invalid_requests = [
+            {
+                **valid,
+                "messages": [
+                    {"role": "user", "content": "x"}
+                    for _index in range(33)
+                ],
+            },
+            {
+                **valid,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "x"}
+                            for _index in range(17)
+                        ],
+                    }
+                ],
+            },
+            {**valid, "messages": [{"role": "user", "content": "x" * 11}]},
+            {
+                **valid,
+                "messages": [
+                    {"role": "system", "content": "x" * 6},
+                    {"role": "user", "content": "y" * 5},
+                ],
+            },
+            {
+                **valid,
+                "messages": [
+                    {"role": "user", "content": "x", "name": "y" * 11}
+                ],
+            },
+            {**valid, "messages": [{"role": "r" * 11, "content": "x"}]},
+        ]
+        helpers = _load_helpers(MAX_CONTENT_CHARS_PER_REQUEST=10)
+
+        for index, request in enumerate(invalid_requests):
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                helpers["_validate_request"](request)
+
+    def test_batch_and_server_helpers_reject_oversize_or_dead_work(self) -> None:
+        helpers = _load_helpers("_server_is_alive", "_validate_batch")
+        validate_batch = helpers["_validate_batch"]
+        server_is_alive = helpers["_server_is_alive"]
+
+        self.assertEqual(validate_batch([{}]), [{}])
+        for requests in [None, [], [{} for _index in range(9)]]:
+            with self.subTest(requests=requests), self.assertRaises(ValueError):
+                validate_batch(requests)
+
+        self.assertFalse(server_is_alive(None))
+        self.assertTrue(server_is_alive(_FakeProcess()))
+        self.assertFalse(server_is_alive(_FakeProcess(return_code=3)))
 
     def test_parse_model_output_accepts_only_a_nonempty_json_object(self) -> None:
         helpers = _load_helpers()
@@ -348,7 +440,7 @@ class ModalWorkerContractTests(unittest.TestCase):
         helpers = _load_helpers()
         success = helpers["_success_result"](
             {"boreholes": []},
-            "rev-7",
+            "untrusted-request-revision",
             "prompt-v2",
             "pre-v4",
         )
@@ -361,7 +453,7 @@ class ModalWorkerContractTests(unittest.TestCase):
                 "metadata": {
                     "provider": "modal",
                     "model_id": "unsloth/Qwen3.6-27B-NVFP4",
-                    "model_revision": "rev-7",
+                    "model_revision": EXPECTED_MODEL_REVISION,
                     "prompt_version": "prompt-v2",
                     "preprocess_version": "pre-v4",
                 },
@@ -383,9 +475,9 @@ class ModalWorkerContractTests(unittest.TestCase):
         tree = _worker_tree()
         literal_constants = {
             "VLLM_PORT": 8000,
-            "GPU": "L4",
+            "GPU": "L40S",
             "MIN_CONTAINERS": 0,
-            "MAX_CONTAINERS": 1,
+            "MAX_CONTAINERS": 2,
             "BUFFER_CONTAINERS": 0,
             "SCALEDOWN_WINDOW_SECONDS": 10,
             "TIMEOUT_SECONDS": 900,
@@ -396,12 +488,16 @@ class ModalWorkerContractTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(ast.literal_eval(_assignment(tree, name)), expected)
 
-        model_call = _assignment(tree, "MODEL_ID")
-        self.assertIsInstance(model_call, ast.Call)
-        self.assertEqual(_attribute_path(model_call.func), "os.getenv")
+        identity_imports = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "georeport3d.model_identity"
+        ]
+        self.assertEqual(len(identity_imports), 1)
         self.assertEqual(
-            [ast.literal_eval(argument) for argument in model_call.args],
-            ["MODEL_ID", "unsloth/Qwen3.6-27B-NVFP4"],
+            {alias.name for alias in identity_imports[0].names},
+            {"MODEL_ID", "MODEL_REVISION"},
         )
         app_call = _assignment(tree, "app")
         self.assertEqual(_attribute_path(app_call.func), "modal.App")
@@ -539,7 +635,26 @@ class ModalWorkerContractTests(unittest.TestCase):
             )
         )
 
+        batch_validation_calls = [
+            child
+            for child in ast.walk(method)
+            if isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "_validate_batch"
+        ]
+        self.assertEqual(len(batch_validation_calls), 1)
+
+        liveness_calls = [
+            child
+            for child in ast.walk(loop)
+            if isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "_server_is_alive"
+        ]
+        self.assertEqual(len(liveness_calls), 1)
+
         completion = _call_with_path(loop, "client.chat.completions.create")
+        self.assertLess(liveness_calls[0].lineno, completion.lineno)
         self.assertEqual(ast.literal_eval(_keyword(completion, "temperature")), 0)
         self.assertEqual(_keyword(completion, "model").id, "MODEL_ID")
         self.assertEqual(_keyword(completion, "messages").id, "messages")

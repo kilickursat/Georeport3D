@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from decimal import Decimal
+from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import delete, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from georeport3d.db.models import Document, UsageRecord
 from georeport3d.db.repositories import (
+    BudgetRepository,
     CacheRepository,
     DocumentRepository,
     InferenceJobRepository,
@@ -26,8 +32,12 @@ from georeport3d.domain.models import (
     Evidence,
     GeotechnicalExtraction,
 )
+from georeport3d.services.cache import CacheKeyParts, make_cache_key
+from georeport3d.services.job_state import TERMINAL_STATES
 
 pytestmark = pytest.mark.integration
+
+GPU_SLOT_STATES = frozenset({"GPU_AUTHORIZED", "GPU_RUNNING"})
 
 
 def _evidence(document_id: str = "doc-1", page: int = 146) -> Evidence:
@@ -79,6 +89,27 @@ def _project_and_document(session: Session) -> tuple:
     return project, document
 
 
+def _canonical_cache_key(
+    *,
+    document_sha256: str = "a" * 64,
+    figure_sha256: str = "b" * 64,
+    model_id: str = "m",
+    model_revision: str | None = None,
+    prompt_version: str = "v1",
+    preprocess_version: str = "v1",
+) -> str:
+    return make_cache_key(
+        CacheKeyParts(
+            document_sha256=document_sha256,
+            figure_sha256=figure_sha256,
+            model_id=model_id,
+            model_revision=model_revision,
+            prompt_version=prompt_version,
+            preprocess_version=preprocess_version,
+        )
+    )
+
+
 def test_same_bytes_resolve_to_one_document(session_factory: sessionmaker[Session]) -> None:
     with unit_of_work(session_factory) as session:
         project = ProjectRepository(session).create(name=f"project-{uuid4()}")
@@ -91,6 +122,53 @@ def test_same_bytes_resolve_to_one_document(session_factory: sessionmaker[Sessio
         assert created_first is True
         assert created_second is False
         assert first.id == second.id
+
+
+def test_document_repository_accepts_storage_receipt_uuid(
+    session_factory: sessionmaker[Session],
+) -> None:
+    supplied_id = uuid4()
+    with unit_of_work(session_factory) as session:
+        project = ProjectRepository(session).create(name=f"project-{uuid4()}")
+        document, created = DocumentRepository(session).add(
+            project.id,
+            "report.pdf",
+            "b" * 64,
+            10,
+            document_id=supplied_id,
+        )
+
+        assert created is True
+        assert document.id == supplied_id
+
+
+def test_concurrent_same_bytes_resolve_to_one_document(
+    session_factory: sessionmaker[Session],
+) -> None:
+    with unit_of_work(session_factory) as session:
+        project = ProjectRepository(session).create(name=f"project-{uuid4()}")
+        project_id = project.id
+
+    barrier = Barrier(2)
+    digest = uuid4().hex * 2
+
+    def add_document(document_id) -> tuple[str, bool]:
+        barrier.wait()
+        with unit_of_work(session_factory) as session:
+            document, created = DocumentRepository(session).add(
+                project_id,
+                "report.pdf",
+                digest,
+                10,
+                document_id=document_id,
+            )
+            return str(document.id), created
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(add_document, (uuid4(), uuid4())))
+
+    assert sum(created for _, created in results) == 1
+    assert len({document_id for document_id, _ in results}) == 1
 
 
 def test_extraction_persists_boreholes_intervals_and_evidence(
@@ -265,14 +343,15 @@ def test_first_cached_result_wins_and_a_duplicate_is_discarded(
 ) -> None:
     with unit_of_work(session_factory) as session:
         repository = CacheRepository(session)
-        key = uuid4().hex + uuid4().hex[:32]
         common = {
             "document_sha256": "a" * 64,
             "figure_sha256": "b" * 64,
             "model_id": "m",
+            "model_revision": None,
             "prompt_version": "v1",
             "preprocess_version": "v1",
         }
+        key = _canonical_cache_key(**common)
 
         assert repository.put(key, result={"value": "first"}, **common) is True
         assert repository.put(key, result={"value": "second"}, **common) is False
@@ -308,9 +387,6 @@ def test_failed_transaction_persists_nothing(session_factory: sessionmaker[Sessi
 def test_budget_position_counts_live_reservations_and_settled_spend(
     session_factory: sessionmaker[Session],
 ) -> None:
-    from georeport3d.db.repositories import BudgetRepository
-    from georeport3d.services.job_state import TERMINAL_STATES
-
     with unit_of_work(session_factory) as session:
         _, document = _project_and_document(session)
         jobs = InferenceJobRepository(session)
@@ -341,3 +417,257 @@ def test_budget_position_counts_live_reservations_and_settled_spend(
         assert settled.reserved_usd == before.reserved_usd
         assert settled.settled_usd - before.settled_usd == Decimal("0.500000")
         assert settled.committed_usd - before.committed_usd == Decimal("0.500000")
+
+
+def test_compare_and_set_transition_cannot_revive_a_terminal_job(
+    session_factory: sessionmaker[Session],
+) -> None:
+    job_id = None
+    with unit_of_work(session_factory) as session:
+        _, document = _project_and_document(session)
+        job, _ = InferenceJobRepository(session).create(
+            document_id=document.id,
+            idempotency_key=f"key-{uuid4()}",
+            provider="modal",
+            model_id="m",
+            prompt_version="v1",
+            preprocess_version="v1",
+            estimated_usd=1,
+            reserved_usd=1,
+            state="GPU_AUTHORIZED",
+        )
+        job_id = job.id
+
+    try:
+        with unit_of_work(session_factory) as session:
+            cancelled = InferenceJobRepository(session).compare_and_set_state(
+                job_id,
+                expected_state="GPU_AUTHORIZED",
+                target_state="CANCELLED",
+            )
+            assert cancelled is True
+
+        with unit_of_work(session_factory) as session:
+            revived = InferenceJobRepository(session).compare_and_set_state(
+                job_id,
+                expected_state="GPU_AUTHORIZED",
+                target_state="GPU_RUNNING",
+            )
+            assert revived is False
+
+        with unit_of_work(session_factory) as session:
+            persisted = InferenceJobRepository(session).get(job_id)
+            assert persisted is not None
+            assert persisted.state == "CANCELLED"
+    finally:
+        if job_id is not None:
+            with unit_of_work(session_factory) as session:
+                repository = InferenceJobRepository(session)
+                job = repository.get(job_id)
+                if job is not None and job.state not in TERMINAL_STATES:
+                    repository.set_state(job_id, "FAILED", error_code="TEST_CLEANUP")
+
+
+def test_budget_admission_is_serialized_across_database_sessions(
+    session_factory: sessionmaker[Session],
+) -> None:
+    # Attribute access intentionally occurs before thread setup so the RED failure
+    # names the missing durable repository operation without a timeout.
+    admit_and_reserve = BudgetRepository.admit_and_reserve
+
+    with unit_of_work(session_factory) as session:
+        _, document = _project_and_document(session)
+        before = BudgetRepository(session).position(TERMINAL_STATES)
+        jobs = InferenceJobRepository(session)
+        first, _ = jobs.create(
+            document_id=document.id,
+            idempotency_key=f"first-{uuid4()}",
+            provider="modal",
+            model_id="m",
+            prompt_version="v1",
+            preprocess_version="v1",
+            estimated_usd=Decimal("0.75"),
+            reserved_usd=0,
+            state="CACHE_LOOKUP",
+        )
+        second, _ = jobs.create(
+            document_id=document.id,
+            idempotency_key=f"second-{uuid4()}",
+            provider="modal",
+            model_id="m",
+            prompt_version="v1",
+            preprocess_version="v1",
+            estimated_usd=Decimal("0.75"),
+            reserved_usd=0,
+            state="CACHE_LOOKUP",
+        )
+        job_ids = (first.id, second.id)
+        ceiling = before.committed_usd + Decimal("1.00")
+
+    first_authorized = Event()
+    release_first = Event()
+
+    def attempt(job_id, *, hold_transaction: bool):  # noqa: ANN001, ANN202
+        with unit_of_work(session_factory) as session:
+            decision = admit_and_reserve(
+                BudgetRepository(session),
+                job_id=job_id,
+                expected_state="CACHE_LOOKUP",
+                estimate_usd=Decimal("0.75"),
+                job_cap_usd=Decimal("1.00"),
+                ceiling_usd=ceiling,
+                max_concurrent_gpu_jobs=2,
+                gpu_slot_states=GPU_SLOT_STATES,
+                terminal_states=TERMINAL_STATES,
+            )
+            if hold_transaction:
+                assert decision.authorized is True
+                first_authorized.set()
+                assert release_first.wait(timeout=5), "test did not release admission"
+            return decision
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(attempt, job_ids[0], hold_transaction=True)
+            assert first_authorized.wait(timeout=5), "first admission did not authorize"
+            second_future = executor.submit(attempt, job_ids[1], hold_transaction=False)
+
+            # The first transaction has not committed its reservation. The second
+            # can be correct only if PostgreSQL, rather than a process lock, makes it
+            # wait for that commit before recomputing the position.
+            with pytest.raises(FutureTimeoutError):
+                second_future.result(timeout=0.25)
+
+            release_first.set()
+            first_decision = first_future.result(timeout=5)
+            second_decision = second_future.result(timeout=5)
+
+        assert first_decision.authorized is True
+        assert first_decision.reason is None
+        assert second_decision.authorized is False
+        assert second_decision.reason == "BUDGET_EXHAUSTED"
+
+        with unit_of_work(session_factory) as session:
+            first_job = InferenceJobRepository(session).get(job_ids[0])
+            second_job = InferenceJobRepository(session).get(job_ids[1])
+            assert first_job is not None and first_job.state == "GPU_AUTHORIZED"
+            assert second_job is not None and second_job.state == "CACHE_LOOKUP"
+    finally:
+        release_first.set()
+        with unit_of_work(session_factory) as session:
+            repository = InferenceJobRepository(session)
+            for job_id in job_ids:
+                job = repository.get(job_id)
+                if job is not None and job.state not in TERMINAL_STATES:
+                    repository.set_state(job_id, "CANCELLED")
+
+
+def test_concurrent_equal_cache_keys_have_one_durable_live_winner(
+    session_factory: sessionmaker[Session],
+) -> None:
+    with unit_of_work(session_factory) as session:
+        _, document = _project_and_document(session)
+        document_id = document.id
+
+    cache_key = _canonical_cache_key(
+        document_sha256="c" * 64,
+        figure_sha256="d" * 64,
+    )
+    start = Barrier(2)
+    created_rows: list[tuple[object, bool]] = []
+
+    def create_live_job(idempotency_key: str) -> tuple[object, bool]:
+        start.wait(timeout=5)
+        with unit_of_work(session_factory) as session:
+            job, created = InferenceJobRepository(session).create(
+                document_id=document_id,
+                idempotency_key=idempotency_key,
+                cache_key=cache_key,
+                provider="modal",
+                model_id="m",
+                prompt_version="v1",
+                preprocess_version="v1",
+                estimated_usd=Decimal("0.10"),
+                reserved_usd=0,
+            )
+            return job.id, created
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(create_live_job, f"single-flight-{uuid4()}")
+                for _ in range(2)
+            ]
+            created_rows = [future.result(timeout=5) for future in futures]
+
+        assert created_rows[0][0] == created_rows[1][0]
+        assert sum(1 for _, created in created_rows if created) == 1
+    finally:
+        with unit_of_work(session_factory) as session:
+            repository = InferenceJobRepository(session)
+            for job_id, _ in created_rows:
+                job = repository.get(job_id)
+                if job is not None and job.state not in TERMINAL_STATES:
+                    repository.set_state(job_id, "CANCELLED")
+
+
+def test_cache_put_rejects_parts_that_do_not_match_the_key(
+    session_factory: sessionmaker[Session],
+) -> None:
+    key = _canonical_cache_key(model_id="authorized-model")
+    with unit_of_work(session_factory) as session:
+        repository = CacheRepository(session)
+        with pytest.raises(ValueError) as caught:
+            repository.put(
+                cache_key=key,
+                document_sha256="a" * 64,
+                figure_sha256="b" * 64,
+                model_id="different-model",
+                model_revision=None,
+                prompt_version="v1",
+                preprocess_version="v1",
+                result={"document_id": "doc-1"},
+            )
+
+        assert caught.type.__name__ == "CacheIdentityError"
+        assert repository.get(key) is None
+
+
+def test_deleting_domain_data_cannot_erase_settled_usage(
+    session_factory: sessionmaker[Session],
+) -> None:
+    with unit_of_work(session_factory) as session:
+        _, document = _project_and_document(session)
+        job, _ = InferenceJobRepository(session).create(
+            document_id=document.id,
+            idempotency_key=f"settled-{uuid4()}",
+            provider="modal",
+            model_id="m",
+            prompt_version="v1",
+            preprocess_version="v1",
+            estimated_usd=1,
+            reserved_usd=1,
+            state="COMPLETED",
+        )
+        usage = UsageRepository(session).record(
+            job.id,
+            "L4",
+            actual_seconds=10,
+            actual_usd=Decimal("0.50"),
+        )
+        document_id = document.id
+        usage_id = usage.id
+
+    deletion_session = session_factory()
+    try:
+        with pytest.raises(IntegrityError):
+            deletion_session.execute(delete(Document).where(Document.id == document_id))
+            deletion_session.flush()
+    finally:
+        deletion_session.rollback()
+        deletion_session.close()
+
+    with unit_of_work(session_factory) as session:
+        persisted = session.scalar(select(UsageRecord).where(UsageRecord.id == usage_id))
+        assert persisted is not None
+        assert persisted.actual_usd == Decimal("0.500000")

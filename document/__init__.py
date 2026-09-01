@@ -1,6 +1,7 @@
 """CPU-first document inventory for PDF and DOCX geotechnical reports."""
 
 from document.base import (
+    DocumentPageLimitError,
     DocumentParseError,
     DocumentParser,
     DocumentParserUnavailableError,
@@ -24,6 +25,7 @@ __all__ = [
     "PREPROCESS_VERSION",
     "Classification",
     "DocumentInventory",
+    "DocumentPageLimitError",
     "DocumentParseError",
     "DocumentParser",
     "DocumentParserUnavailableError",

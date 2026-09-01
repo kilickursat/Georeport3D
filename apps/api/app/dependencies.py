@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from georeport3d.config import Settings
+from georeport3d.db.session import create_database_engine, create_session_factory
 from georeport3d.inference.base import InferenceProvider
 from georeport3d.inference.mock import MockInferenceProvider
 from georeport3d.storage import LocalDocumentStore
@@ -11,6 +12,11 @@ from georeport3d.storage import LocalDocumentStore
 def build_store(settings: Settings) -> LocalDocumentStore:
     """Build the local document store configured for this API instance."""
     return LocalDocumentStore(settings.storage_root)
+
+
+def build_session_factory(settings: Settings):
+    """Build the durable database boundary without opening a connection eagerly."""
+    return create_session_factory(create_database_engine(settings.database_url))
 
 
 def build_provider(settings: Settings) -> InferenceProvider:
