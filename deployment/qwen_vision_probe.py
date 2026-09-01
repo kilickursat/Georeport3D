@@ -180,6 +180,14 @@ def read_sheets() -> dict:
         max_model_len=32768,
         limit_mm_per_prompt={"image": 1},
         trust_remote_code=True,
+        # The checkpoint quantises its lm_head as w8a16 fp8 while the body is NVFP4.
+        # Left on `auto`, vLLM hands that layer to the `humming` kernel, whose
+        # `can_implement` returns True unconditionally on SM75+; it then reads
+        # `output_partition_sizes`, which `LinearBase` defines and `ParallelLMHead`
+        # does not, and the load dies. `marlin` is the weight-only kernel, which is
+        # what w8a16 actually is - the activations stay 16-bit, so the scaled-mm
+        # kernels that expect fp8 on both sides were never the right choice here.
+        kernel_config={"linear_backend": "marlin"},
     )
     startup_seconds = time.monotonic() - started
     print(f"vLLM ready in {startup_seconds:.1f}s", flush=True)
@@ -235,6 +243,60 @@ def read_sheets() -> dict:
         "sizes": {str(k): v for k, v in sizes.items()},
         "answers": {str(k): v for k, v in answers.items()},
         "durations": {str(k): round(v, 1) for k, v in durations.items()},
+    }
+
+
+@app.function(image=image, timeout=600, retries=0)
+def inspect_linear_backends() -> dict:
+    """List the linear kernels vLLM can pick, and how it picks one. No GPU.
+
+    The load failed in `humming`'s `prepare_humming_layer`, which reads an attribute
+    that `ParallelLMHead` does not define - so the question is whether a different
+    linear backend avoids that path for this checkpoint's quantized lm_head. The
+    engine config prints `linear_backend='auto'`, so there is a choice to make, and
+    the set of valid choices is readable from the installed package without a device.
+    """
+    import inspect as inspect_module
+    import pkgutil
+
+    from vllm.config import KernelConfig
+    from vllm.model_executor.kernels.linear import scaled_mm
+
+    modules = sorted(module.name for module in pkgutil.iter_modules(scaled_mm.__path__))
+
+    field = KernelConfig.__dataclass_fields__.get("linear_backend")
+    try:
+        registry = inspect_module.getsource(scaled_mm)
+    except OSError:
+        registry = ""
+
+    # How the choice is actually delivered to the engine, and which kernel claims the
+    # w8a16-fp8 scheme that the lm_head loads under.
+    from vllm.engine.arg_utils import EngineArgs
+
+    engine_fields = sorted(
+        name for name in EngineArgs.__dataclass_fields__ if "kernel" in name.lower()
+    )
+    from vllm.model_executor.kernels.linear.scaled_mm import humming as humming_module
+
+    try:
+        chooser = inspect_module.getsource(humming_module.HummingFP8ScaledMMLinearKernel)
+    except (OSError, AttributeError):
+        chooser = "\n".join(sorted(dir(humming_module)))
+
+    print(f"scaled_mm kernels: {modules}", flush=True)
+    print(f"linear_backend field: {getattr(field, 'type', None)}", flush=True)
+    print(f"EngineArgs kernel fields: {engine_fields}", flush=True)
+    print("--- humming kernel: can_implement / registration ---", flush=True)
+    for line in chooser.splitlines():
+        if any(word in line for word in ("class ", "def ", "can_implement", "return")):
+            print(f"  {line.strip()[:150]}", flush=True)
+    print("--- scaled_mm/__init__.py ---", flush=True)
+    print(registry[:1500], flush=True)
+    return {
+        "modules": modules,
+        "linear_backend_type": str(getattr(field, "type", None)),
+        "engine_kernel_fields": engine_fields,
     }
 
 
