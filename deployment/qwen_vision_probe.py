@@ -79,6 +79,9 @@ TIMEOUT_SECONDS = 3600
 PAGES = (80, 81, 83, 87, 91)
 MAX_OUTPUT_TOKENS = 1200
 
+# Where the cu13 wheels put their shared libraries inside the image.
+_CU13_LIB = "/usr/local/lib/python3.13/site-packages/nvidia/cu13/lib"
+
 REPORT = Path(__file__).parent.parent / "cbd2_20per_geotechnicalbaselinereport.pdf"
 REMOTE_REPORT = "/data/report.pdf"
 
@@ -98,7 +101,20 @@ image = (
         "pypdfium2>=4,<6",
         "pillow>=10,<13",
     )
-    .env({"HF_XET_HIGH_PERFORMANCE": "1", "HF_HOME": "/cache"})
+    .env(
+        {
+            "HF_XET_HIGH_PERFORMANCE": "1",
+            "HF_HOME": "/cache",
+            # The base image is CUDA 12.9, but every CUDA wheel installed above is
+            # cu13 - torch 2.11 is built for CUDA 13, and nvrtc arrives as
+            # `nvidia-cuda-nvrtc==13.0.88`. Marlin's NVFP4 path JIT-compiles a repack
+            # kernel at model load, and NVRTC then failed to open its own
+            # `libnvrtc-builtins.so.13.0`, which a CPU probe found present in the
+            # wheel's directory and absent from the loader path. Naming that
+            # directory is what lets the compile find it.
+            "LD_LIBRARY_PATH": f"{_CU13_LIB}:/usr/local/cuda/lib64:/usr/local/nvidia/lib64",
+        }
+    )
     .add_local_python_source("document", "georeport3d")
     .add_local_file(REPORT.as_posix(), REMOTE_REPORT)
 )
@@ -219,6 +235,87 @@ def read_sheets() -> dict:
         "sizes": {str(k): v for k, v in sizes.items()},
         "answers": {str(k): v for k, v in answers.items()},
         "durations": {str(k): round(v, 1) for k, v in durations.items()},
+    }
+
+
+def _nvrtc_compiles() -> str:
+    """Compile a trivial kernel through NVRTC and report what happened.
+
+    Deliberately runs without a GPU. NVRTC is a compiler, so it needs no device to
+    do its work - which means the exact failure that cost a 21.8 GiB model load to
+    discover can be reproduced, and a fix for it confirmed, on a CPU container.
+    """
+    import ctypes
+
+    try:
+        nvrtc = ctypes.CDLL("libnvrtc.so.13")
+    except OSError as error:
+        return f"libnvrtc.so.13 did not load: {error}"
+
+    program = ctypes.c_void_p()
+    source = b"__global__ void probe(float *out) { out[0] = 1.0f; }"
+    created = nvrtc.nvrtcCreateProgram(
+        ctypes.byref(program), source, b"probe.cu", 0, None, None
+    )
+    if created != 0:
+        return f"nvrtcCreateProgram failed with {created}"
+
+    if nvrtc.nvrtcCompileProgram(program, 0, None) == 0:
+        return "ok"
+
+    # The reason lives in the program log, which is where the missing-builtins error
+    # surfaced. Returning the code alone would repeat the original mistake of knowing
+    # that something failed without knowing what.
+    size = ctypes.c_size_t()
+    nvrtc.nvrtcGetProgramLogSize(program, ctypes.byref(size))
+    log = ctypes.create_string_buffer(size.value or 1)
+    nvrtc.nvrtcGetProgramLog(program, log)
+    return f"FAILED: {log.value.decode(errors='replace').strip() or 'no log'}"
+
+
+@app.function(image=image, timeout=600, retries=0)
+def diagnose() -> dict:
+    """Report the CUDA toolchain this image actually has. No GPU.
+
+    The first real run died inside NVRTC - `failed to open libnvrtc-builtins.so.13.0`
+    against a CUDA 12.9 base image - and it cost a model load to learn that. Which
+    nvrtc is present, which builtins sit beside it, and what torch was built against
+    are all answerable on a CPU container for a fraction of a cent, so they are asked
+    here instead of on a GPU.
+    """
+    import glob
+    import importlib.metadata as metadata
+
+    import torch
+
+    libraries = sorted(
+        glob.glob("/usr/local/**/libnvrtc*.so*", recursive=True)
+        + glob.glob("/usr/lib/**/libnvrtc*.so*", recursive=True)
+    )
+    nvidia = sorted(
+        f"{dist.metadata['Name']}=={dist.version}"
+        for dist in metadata.distributions()
+        if (dist.metadata["Name"] or "").startswith(("nvidia-", "torch", "vllm"))
+    )
+    compile_result = _nvrtc_compiles()
+    print(f"nvrtc compile: {compile_result}", flush=True)
+
+    # Printed rather than only returned: `modal run` does not echo a return value, so
+    # a silent result is indistinguishable from a result nobody looked at.
+    print(f"torch {torch.__version__} built for CUDA {torch.version.cuda}", flush=True)
+    print("libnvrtc on disk:", flush=True)
+    for library in libraries:
+        print(f"  {library}", flush=True)
+    print("packages:", flush=True)
+    for package in nvidia:
+        print(f"  {package}", flush=True)
+
+    return {
+        "torch": torch.__version__,
+        "torch_built_for_cuda": torch.version.cuda,
+        "nvrtc_compile": compile_result,
+        "libnvrtc_found": libraries,
+        "packages": nvidia,
     }
 
 
