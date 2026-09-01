@@ -29,16 +29,50 @@ from __future__ import annotations
 
 import json
 import sys
+from functools import cache
 from pathlib import Path
 
 import modal
 
 sys.path.insert(0, Path(__file__).parent.parent.as_posix())
 
-from deployment.ocr_comparison import GROUND_TRUTH  # noqa: E402
 from georeport3d.model_identity import MODEL_ID, MODEL_REVISION  # noqa: E402
 
-GPU = "L40S"
+
+@cache
+def ground_truth() -> dict[int, tuple[str, ...]]:
+    """The tokens already verified present on each sheet.
+
+    Loaded on first use rather than at module scope. Modal executes this same file
+    inside the container, where only the `document` and `georeport3d` sources are
+    shipped, so importing `deployment` up here fails there - and fails only after a
+    GPU has been allocated, which is the most expensive place there is to discover a
+    missing module. Scoring runs in the local entrypoint, so the import never has to
+    happen remotely at all.
+    """
+    from deployment.ocr_comparison import GROUND_TRUTH
+
+    return GROUND_TRUTH
+
+# Cheapest first, and Modal takes the first type with free capacity. A single-type
+# request queues against one pool: the first attempt sat unscheduled with no L40S
+# available and no way to see a queue position. Every type here has enough memory for
+# the 21.8 GiB of weights, so which one runs changes the price and the throughput but
+# not what the model reads, which is the question this run exists to answer.
+#
+# Only Blackwell does FP4 arithmetic natively. On Ada and Hopper vLLM keeps the weights
+# NVFP4-compressed and computes activations in BF16 through Marlin, so a result from
+# any of these is a floor on quality rather than a handicap - and a floor on speed too,
+# which makes any cost calibration taken from it conservative.
+GPU = ["L40S", "A100-40GB", "A100-80GB", "H100"]
+# Published Modal rates, so the run can price itself against whichever type it landed
+# on rather than against the one that was asked for.
+USD_PER_HOUR = {
+    "L40S": 1.9512,
+    "A100-40GB": 2.1000,
+    "A100-80GB": 2.5000,
+    "H100": 3.9500,
+}
 TIMEOUT_SECONDS = 3600
 # The geologic map, a legend sheet, and three profiles. Enough to answer the question
 # without paying to re-answer it nine times.
@@ -94,6 +128,10 @@ Answer as a plain list, one item per line."""
     volumes={"/cache": hf_cache},
     secrets=[hf_secret],
     timeout=TIMEOUT_SECONDS,
+    # A failure here is a bug in this file, not a flaky machine, so retrying it just
+    # allocates the same GPU again to reach the same exception. Measured: an import
+    # error retried on paid containers before it could be stopped by hand.
+    retries=0,
 )
 def read_sheets() -> dict:
     """Load the model once, then read each sheet."""
@@ -136,7 +174,11 @@ def read_sheets() -> dict:
         "free_after_load_gib": round(free / 1024**3, 2),
         "used_gib": round((total - free) / 1024**3, 2),
     }
-    print(f"memory: {memory}", flush=True)
+    # Which type actually ran, since the request names several. Reported by the driver
+    # rather than assumed, so the price below is the price of the hardware used.
+    device = torch.cuda.get_device_name(0)
+    capability = ".".join(str(part) for part in torch.cuda.get_device_capability(0))
+    print(f"device: {device} (sm{capability})   memory: {memory}", flush=True)
 
     sampling = SamplingParams(temperature=0.0, max_tokens=MAX_OUTPUT_TOKENS)
     answers: dict[int, str] = {}
@@ -171,6 +213,8 @@ def read_sheets() -> dict:
 
     return {
         "startup_seconds": round(startup_seconds, 1),
+        "device": device,
+        "compute_capability": capability,
         "memory": memory,
         "sizes": {str(k): v for k, v in sizes.items()},
         "answers": {str(k): v for k, v in answers.items()},
@@ -190,7 +234,7 @@ def score(page: int, text: str) -> dict:
     from document.terms import normalize
 
     haystack = normalize(text)
-    expected = GROUND_TRUTH.get(page, ())
+    expected = ground_truth().get(page, ())
     found = [token for token in expected if normalize(token) in haystack]
 
     # Identifier-shaped strings the model emitted, e.g. B-3, T-201, TS-104.
@@ -218,9 +262,22 @@ def main() -> None:
         json.dumps({"run": result, "rows": rows}, indent=2, default=str)
     )
 
+    # Priced from the device the driver reported, matched against the rate table by
+    # substring because Modal's type names and the driver's product names differ
+    # ("H100" vs "NVIDIA H100 80GB HBM3"). An unmatched device prices at nothing and
+    # says so, rather than quietly reporting a cost that is not the one incurred.
+    device = str(result.get("device", ""))
+    rate = next((usd for name, usd in USD_PER_HOUR.items() if name.split("-")[0] in device), None)
+    billed = result["startup_seconds"] + sum(result["durations"].values())
+
     print()
     print("=" * 74)
+    print(f"device  {device} (sm{result.get('compute_capability', '?')})")
     print(f"startup {result['startup_seconds']}s   memory {result['memory']}")
+    if rate is None:
+        print(f"gpu time {billed:.0f}s   cost UNKNOWN (no rate for {device!r})")
+    else:
+        print(f"gpu time {billed:.0f}s   cost ~${billed * rate / 3600:.2f} at ${rate}/hr")
     print("-" * 74)
     print(f"{'page':<7}{'recall':>10}{'chars':>9}{'secs':>8}   {'unread':>7}  invented")
     found_total = expected_total = 0
