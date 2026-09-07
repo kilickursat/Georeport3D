@@ -83,7 +83,7 @@ flowchart LR
   F --> C{Cache hit?}
   C -- yes --> V[Validated result]
   C -- no --> B[Budget estimate + explicit authorization]
-  B --> M[Modal L40S · Qwen3.6-27B-NVFP4 · vLLM]
+  B --> M[Modal L40S · Qwen3.6-27B-FP8 · vLLM]
   M --> P[Schema + evidence validation]
   P --> V
   V --> D[(PostGIS)]
@@ -158,7 +158,7 @@ service container, on each pull request.
 ## Deployment
 
 Production inference runs on Modal serverless GPU — up to two L40S containers serving
-`unsloth/Qwen3.6-27B-NVFP4` under vLLM, pinned to an exact revision, scaling to zero with no
+`Qwen/Qwen3.6-27B-FP8` under vLLM, pinned to an exact revision, scaling to zero with no
 automatic retries. Model weights live inside the Modal container and are never downloaded to a
 workstation or a CI runner.
 
@@ -211,7 +211,7 @@ cost boundaries, and the evidence required before and after a deploy.
 
 [Modal](https://modal.com/) ·
 [vLLM](https://github.com/vllm-project/vllm) ·
-[Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) ·
+[Qwen3.6-27B-FP8](https://huggingface.co/Qwen/Qwen3.6-27B-FP8) ·
 [Hugging Face Hub](https://huggingface.co/) ·
 [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) ·
 [FlashInfer](https://github.com/flashinfer-ai/flashinfer) ·
@@ -272,9 +272,8 @@ it. Particular thanks to:
   model is asked about it.
 - **[vLLM](https://github.com/vllm-project/vllm)** for the serving layer that makes a 27B model
   practical on a single GPU.
-- **[Qwen](https://github.com/QwenLM)**, from Alibaba, for the vision-language model, and
-  **[Unsloth](https://huggingface.co/unsloth)** for the NVFP4 quantisation that lets it fit on
-  24 GB.
+- **[Qwen](https://github.com/QwenLM)**, from Alibaba, for the vision-language model and the
+  FP8 build that fits it on a single 48 GB GPU.
 - **[PostGIS](https://postgis.net/)** and the wider [OSGeo](https://www.osgeo.org/) community,
   whose work underpins every spatial guarantee this project makes.
 - **[SQLAlchemy](https://www.sqlalchemy.org/)** and **[Alembic](https://alembic.sqlalchemy.org/)**
