@@ -14,8 +14,8 @@ from typing import Any
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 WORKER_PATH = REPOSITORY_ROOT / "deployment" / "modal_worker.py"
 IDENTITY_PATH = REPOSITORY_ROOT / "georeport3d" / "model_identity.py"
-EXPECTED_MODEL_ID = "unsloth/Qwen3.6-27B-NVFP4"
-EXPECTED_MODEL_REVISION = "ccdaab7e68af2409599b8949a8f2685703c9bae5"
+EXPECTED_MODEL_ID = "Qwen/Qwen3.6-27B-FP8"
+EXPECTED_MODEL_REVISION = "e89b16ebf1988b3d6befa7de50abc2d76f26eb09"
 PURE_HELPERS = {
     "_failure_result",
     "_parse_model_output",
@@ -452,7 +452,7 @@ class ModalWorkerContractTests(unittest.TestCase):
                 "output": {"boreholes": []},
                 "metadata": {
                     "provider": "modal",
-                    "model_id": "unsloth/Qwen3.6-27B-NVFP4",
+                    "model_id": "Qwen/Qwen3.6-27B-FP8",
                     "model_revision": EXPECTED_MODEL_REVISION,
                     "prompt_version": "prompt-v2",
                     "preprocess_version": "pre-v4",
