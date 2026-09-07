@@ -66,8 +66,10 @@ carries the full register with per-item evidence requirements.
 | Domain models, evidence and depth validation | Implemented and tested |
 | Budget ledger and canonical cache key | Implemented, in-memory only |
 | PostGIS schema and Alembic baseline | Migration verified against PostGIS 17-3.5 in CI |
-| Modal worker declaration (vLLM, L40S, scale-to-zero) | Declared and contract-tested, never deployed |
-| Document pipeline (Docling adapter, inventory, figure routing) | Implemented at code level; not wired to an API route or target-proven |
+| Modal worker declaration (vLLM, L40S, scale-to-zero) | Declared and contract-tested; the worker itself has never been deployed |
+| Model fit on the deployment GPU | **Measured.** `Qwen/Qwen3.6-27B-FP8` loads on one L40S in 293.7 s, 41.74 GiB of 47.37 GiB resident, 572,347-token KV cache. See [Decision 011](docs/17_CHANGE_LOG_AND_DECISIONS.md) |
+| Vision extraction accuracy | **Unproven.** A model reads a drawing sheet in 64.1 s for ~$0.035 and recalls 29/30 known tokens, but those are strata and place names. Of eighteen borehole identifiers it reported, OCR could confirm ten, and that number cannot yet separate a misread from an invention |
+| Document pipeline (Docling adapter, inventory, figure routing) | Implemented at code level; not wired to an API route. Full-page drawing sheets route on structure as `drawing_sheet` with no type asserted |
 | Geology (CRS transforms, borehole geometry) | Not started |
 | Job orchestration and extraction endpoints | Not started |
 | Web application and 3D viewer | Not started |
