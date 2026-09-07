@@ -72,7 +72,7 @@ def _modal_provider(spy: _ResolverSpy) -> ModalInferenceProvider:
     return ModalInferenceProvider(
         app_name="georeport3d-qwen",
         class_name="QwenWorker",
-        model_id="unsloth/Qwen3.6-27B-NVFP4",
+        model_id="Qwen/Qwen3.6-27B-FP8",
         resolver=spy,
     )
 

@@ -34,6 +34,7 @@ build/
 docling_bench_result.json
 docling_ocr_probe_result.json
 ocr_comparison_result.json
+qwen_vision_probe_result.json
 
 # Per-machine tool permissions, not a project setting.
 .claude/settings.local.json

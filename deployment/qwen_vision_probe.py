@@ -3,21 +3,25 @@
 This is the question the whole document pipeline has been waiting on. `PLAN.md`
 records OCR as recovering text from the nine profile sheets at 2.9x the parse time,
 and `deployment/ocr_comparison.py` measured how much of that text is the values a
-geotechnical pipeline exists to capture. If `unsloth/Qwen3.6-27B-NVFP4` reads a
-rendered sheet directly, OCR becomes an optional prefilter rather than a required
-stage, and the default flips off.
+geotechnical pipeline exists to capture. If the deployed model reads a rendered sheet
+directly, OCR becomes an optional prefilter rather than a required stage, and the
+default flips off.
 
 Three things are measured, in ascending order of what they cost to be wrong about:
 
   1. Whether vLLM starts at all on an L40S with this checkpoint, and how much of the
      48 GB the weights leave for a KV cache. This is the fit evidence Decision 010
-     was taken on and never verified.
+     was taken on and never verified - and the first thing this probe overturned:
+     the NVFP4 checkpoint it originally pointed at needs Blackwell, which is why
+     `MODEL_ID` is now the FP8 build.
   2. Whether the model reads the sheet. Scored on recall of tokens known to be on it,
      reusing the ground truth already written for the OCR comparison, because
      character count rewards a model for inventing text.
-  3. Whether it invents. A model that returns plausible borehole identifiers that are
-     not on the page is worse than one that returns nothing, because the pipeline
-     would cite them.
+  3. Which identifiers it reports. A model that returns plausible borehole numbers
+     that are not on the page is worse than one that returns nothing, because the
+     pipeline would cite them - but this run only *lists* what was read. Confirming
+     each against the sheet needs the page text, which lives in
+     `deployment/ocr_comparison.py`, so invention is not scored here.
 
 This spends real money: an L40S at $0.000542/sec. One run loads the model once and
 reads a handful of sheets.
@@ -56,15 +60,18 @@ def ground_truth() -> dict[int, tuple[str, ...]]:
 
 # Cheapest first, and Modal takes the first type with free capacity. A single-type
 # request queues against one pool: the first attempt sat unscheduled with no L40S
-# available and no way to see a queue position. Every type here has enough memory for
-# the 21.8 GiB of weights, so which one runs changes the price and the throughput but
-# not what the model reads, which is the question this run exists to answer.
+# available and no way to see a queue position.
 #
-# Only Blackwell does FP4 arithmetic natively. On Ada and Hopper vLLM keeps the weights
-# NVFP4-compressed and computes activations in BF16 through Marlin, so a result from
-# any of these is a floor on quality rather than a handicap - and a floor on speed too,
-# which makes any cost calibration taken from it conservative.
-GPU = ["L40S", "A100-40GB", "A100-80GB", "H100"]
+# A100-40GB was in this list and is not any more. The FP8 checkpoint is ~30.9 GB, which
+# leaves a 40 GiB card too little for a KV cache once the vision encoder is resident.
+# Every type left here holds the weights with real headroom - on L40S, around 14 GiB of
+# it.
+#
+# These are the GPUs vLLM's own recipe names for the FP8 build of this model, so no
+# kernel is being forced and no fallback path is in play. That is the point: the
+# NVFP4 checkpoint this probe first tried is W4A4 and needs Blackwell's FP4 tensor
+# cores, and Unsloth documents Marlin as severely degrading it on anything older.
+GPU = ["L40S", "A100-80GB", "H100"]
 # Published Modal rates, so the run can price itself against whichever type it landed
 # on rather than against the one that was asked for.
 USD_PER_HOUR = {
@@ -105,13 +112,16 @@ image = (
         {
             "HF_XET_HIGH_PERFORMANCE": "1",
             "HF_HOME": "/cache",
+            # Cheap insurance against allocator fragmentation near the ceiling. An
+            # earlier run OOMed with 1.53 GiB free and recommended exactly this.
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
             # The base image is CUDA 12.9, but every CUDA wheel installed above is
             # cu13 - torch 2.11 is built for CUDA 13, and nvrtc arrives as
-            # `nvidia-cuda-nvrtc==13.0.88`. Marlin's NVFP4 path JIT-compiles a repack
-            # kernel at model load, and NVRTC then failed to open its own
-            # `libnvrtc-builtins.so.13.0`, which a CPU probe found present in the
-            # wheel's directory and absent from the loader path. Naming that
-            # directory is what lets the compile find it.
+            # `nvidia-cuda-nvrtc==13.0.88`. Any kernel that JIT-compiles at model load
+            # goes through NVRTC, which failed to open its own
+            # `libnvrtc-builtins.so.13.0`: a CPU probe found the file present in the
+            # wheel's directory and absent from the loader path. Naming that directory
+            # is what lets the compile find it.
             "LD_LIBRARY_PATH": f"{_CU13_LIB}:/usr/local/cuda/lib64:/usr/local/nvidia/lib64",
         }
     )
@@ -180,14 +190,12 @@ def read_sheets() -> dict:
         max_model_len=32768,
         limit_mm_per_prompt={"image": 1},
         trust_remote_code=True,
-        # The checkpoint quantises its lm_head as w8a16 fp8 while the body is NVFP4.
-        # Left on `auto`, vLLM hands that layer to the `humming` kernel, whose
-        # `can_implement` returns True unconditionally on SM75+; it then reads
-        # `output_partition_sizes`, which `LinearBase` defines and `ParallelLMHead`
-        # does not, and the load dies. `marlin` is the weight-only kernel, which is
-        # what w8a16 actually is - the activations stay 16-bit, so the scaled-mm
-        # kernels that expect fp8 on both sides were never the right choice here.
-        kernel_config={"linear_backend": "marlin"},
+        # This is a hybrid attention model, so each concurrent decode sequence needs
+        # its own Mamba cache block, and the default 1024 asks for more blocks than
+        # the KV cache has room to allocate. The probe reads five sheets one at a
+        # time; asking for a thousand slots would reserve capacity for concurrency
+        # that this run never uses.
+        max_num_seqs=16,
     )
     startup_seconds = time.monotonic() - started
     print(f"vLLM ready in {startup_seconds:.1f}s", flush=True)
@@ -382,11 +390,21 @@ def diagnose() -> dict:
 
 
 def score(page: int, text: str) -> dict:
-    """Recall of tokens known to be on the sheet, plus what was invented.
+    """Recall of tokens known to be on the sheet. Does *not* measure invention.
 
     Recall alone rewards a model for emitting everything it can imagine, so the
-    identifiers it reports that are *not* on the page are counted too. For a pipeline
-    that cites its sources, a confident wrong borehole is the more expensive error.
+    identifiers it reported are listed too - but only listed. Deciding whether one was
+    invented needs the page's own text, and `GROUND_TRUTH` cannot stand in for that:
+    it is a whitelist of tokens verified present, not an inventory of the sheet, and it
+    holds geological and place terms with almost no identifiers among them. Scoring
+    against it marked `CBD-2` - the contract number printed in every title block - as
+    a fabrication on all five sheets.
+
+    The field is named for what it actually contains. An earlier version called it
+    `identifiers_not_in_ground_truth` while the docstring claimed it measured
+    invention, which is the worse kind of wrong: it yields a plausible number instead
+    of an error, and a reader takes it at face value. `deployment/ocr_comparison.py`
+    holds the page text that answers the real question.
     """
     import re
 
@@ -396,9 +414,9 @@ def score(page: int, text: str) -> dict:
     expected = ground_truth().get(page, ())
     found = [token for token in expected if normalize(token) in haystack]
 
-    # Identifier-shaped strings the model emitted, e.g. B-3, T-201, TS-104.
+    # Identifier-shaped strings the model emitted, e.g. B-3, T-201, TS-104. Reported
+    # for a reviewer to check against the page, not scored here.
     emitted = {match.group(0).upper() for match in re.finditer(r"\b[A-Z]{1,3}-\d{1,4}\b", text)}
-    known = {token.upper().replace(" ", "-") for token in expected}
     return {
         "page": page,
         "chars": len(text),
@@ -407,7 +425,6 @@ def score(page: int, text: str) -> dict:
         "recall": round(len(found) / len(expected), 3) if expected else None,
         "missed": [token for token in expected if token not in found],
         "identifiers_emitted": sorted(emitted),
-        "identifiers_not_in_ground_truth": sorted(emitted - known),
         "declared_unreadable": "UNREADABLE" in text.upper(),
     }
 
@@ -438,7 +455,7 @@ def main() -> None:
     else:
         print(f"gpu time {billed:.0f}s   cost ~${billed * rate / 3600:.2f} at ${rate}/hr")
     print("-" * 74)
-    print(f"{'page':<7}{'recall':>10}{'chars':>9}{'secs':>8}   {'unread':>7}  invented")
+    print(f"{'page':<7}{'recall':>10}{'chars':>9}{'secs':>8}   {'unread':>7}  identifiers read")
     found_total = expected_total = 0
     for row in rows:
         found_total += row["found"]
@@ -447,11 +464,13 @@ def main() -> None:
             f"{row['page']:<7}{row['found']}/{row['expected']:<8}{row['chars']:>9}"
             f"{result['durations'].get(str(row['page']), 0):>8}"
             f"   {str(row['declared_unreadable']):>7}"
-            f"  {row['identifiers_not_in_ground_truth']}"
+            f"  {row['identifiers_emitted']}"
         )
     print("-" * 74)
     share = found_total / max(expected_total, 1)
     print(f"TOTAL recall {found_total}/{expected_total} = {share:.1%}")
+    print("Identifiers are listed, not scored: whether one is on the page is a")
+    print("question for the page text, which this run does not have.")
     print("=" * 74)
     for row in rows:
         if row["missed"]:

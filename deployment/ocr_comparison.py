@@ -291,3 +291,160 @@ def main() -> None:
             print(f"  p{row['docling']['page']}")
             print(f"     docling missed: {row['docling']['missed']}")
             print(f"     baidu   missed: {row['baidu']['missed']}")
+
+
+@app.function(image=docling_image, timeout=TIMEOUT_SECONDS, retries=0)
+def confirm_identifiers(emitted: dict[str, list[str]]) -> dict:
+    """Check identifiers a vision model reported against OCR of the same sheets.
+
+    `qwen_vision_probe.py` lists the borehole and test-pit identifiers the model read,
+    but it cannot say whether any was invented: `GROUND_TRUTH` is a whitelist of tokens
+    verified present, not an inventory of the sheet, and it holds strata and place
+    names with almost no identifiers among them. Scored against it, `CBD-2` - the
+    contract number in every title block - looked like a fabrication on all five pages.
+
+    Precision is the number that matters for a pipeline that cites its sources: a
+    confident wrong borehole is worse than silence, because the citation would carry it
+    into the database. So each identifier is looked for in the page's own OCR text.
+
+    Runs on CPU here rather than on a workstation, because a local Docling pass over
+    this report exhausted the machine it was run on.
+    """
+    import re
+
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    def fold(text: str) -> str:
+        """Bare alphanumerics, so 'B-1', 'B 1' and 'B1' compare equal.
+
+        OCR of a drawing sheet is inconsistent about hyphens and spacing inside an
+        identifier, and treating those spellings as different strings would score a
+        correct read as an invention.
+        """
+        return re.sub(r"[^a-z0-9]+", "", text.casefold())
+
+    options = PdfPipelineOptions()
+    options.do_ocr = True
+    options.do_table_structure = False
+    converter = DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+    )
+    document = converter.convert(Path(REMOTE_REPORT), page_range=PAGE_RANGE).document
+
+    text_by_page: dict[int, list[str]] = {}
+    for item, _level in document.iterate_items():
+        text = getattr(item, "text", None)
+        if not text:
+            continue
+        for provenance in getattr(item, "prov", []) or []:
+            text_by_page.setdefault(provenance.page_no, []).append(text)
+
+    rows = []
+    for page_key, identifiers in sorted(emitted.items(), key=lambda pair: int(pair[0])):
+        page = int(page_key)
+        haystack = fold(" ".join(text_by_page.get(page, [])))
+        confirmed = [token for token in identifiers if fold(token) in haystack]
+        rows.append(
+            {
+                "page": page,
+                "emitted": list(identifiers),
+                "confirmed": confirmed,
+                "unconfirmed": [t for t in identifiers if fold(t) not in haystack],
+                "ocr_chars": len(haystack),
+            }
+        )
+        print(
+            f"p{page}: {len(confirmed)}/{len(identifiers)} confirmed"
+            f"  found={confirmed}  missing={rows[-1]['unconfirmed']}",
+            flush=True,
+        )
+    return {"rows": rows}
+
+
+@app.local_entrypoint()
+def verify() -> None:
+    """Confirm the vision probe's identifiers against OCR.
+
+        modal run deployment/ocr_comparison.py::verify
+    """
+    result_path = Path(__file__).parent.parent / "qwen_vision_probe_result.json"
+    if not result_path.exists():
+        raise SystemExit(f"run the vision probe first: {result_path} is missing")
+
+    rows = json.loads(result_path.read_text())["rows"]
+    emitted = {str(row["page"]): row["identifiers_emitted"] for row in rows}
+
+    outcome = confirm_identifiers.remote(emitted)
+    confirmed = sum(len(row["confirmed"]) for row in outcome["rows"])
+    total = sum(len(row["emitted"]) for row in outcome["rows"])
+
+    print()
+    print("=" * 74)
+    print(f"IDENTIFIER PRECISION {confirmed}/{total} = {confirmed / max(total, 1):.1%}")
+    print("Unconfirmed is an upper bound on invention, not a count of it: OCR misses")
+    print("text too, so an identifier it failed to recover lands in the same column.")
+    print("=" * 74)
+
+
+@app.local_entrypoint()
+def verify_two_readers() -> None:
+    """Confirm the vision probe's identifiers against two independent OCR engines.
+
+        modal run deployment/ocr_comparison.py::verify_two_readers
+
+    Docling alone confirmed 10 of 18. That number cannot separate "the model invented
+    this" from "Docling could not read it", and the two have opposite consequences: the
+    first says the model is unusable for a pipeline that cites its sources, the second
+    says OCR is - which is the case this project already documented. A second reader
+    that finds an identifier settles it in the model's favour; one that also misses it
+    leaves the charge open rather than proving it.
+    """
+    import re
+
+    result_path = Path(__file__).parent.parent / "qwen_vision_probe_result.json"
+    if not result_path.exists():
+        raise SystemExit(f"run the vision probe first: {result_path} is missing")
+
+    rows = json.loads(result_path.read_text())["rows"]
+    emitted = {str(row["page"]): row["identifiers_emitted"] for row in rows}
+
+    docling_future = confirm_identifiers.spawn(emitted)
+    baidu = run_baidu.remote()
+    docling = docling_future.get()
+
+    def fold(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", text.casefold())
+
+    baidu_text = {int(page): fold(text) for page, text in baidu["texts"].items()}
+
+    print()
+    print("=" * 74)
+    print(f"{'page':<6}{'identifier':<12}{'docling':<10}{'baidu':<9}verdict")
+    print("-" * 74)
+    both = neither = one = 0
+    for row in docling["rows"]:
+        page = row["page"]
+        haystack = baidu_text.get(page, "")
+        for token in row["emitted"]:
+            in_docling = token in row["confirmed"]
+            in_baidu = fold(token) in haystack
+            if in_docling and in_baidu:
+                verdict, _ = "on the page", (both := both + 1)
+            elif in_docling or in_baidu:
+                verdict, _ = "on the page", (one := one + 1)
+            else:
+                verdict, _ = "UNCONFIRMED", (neither := neither + 1)
+            print(
+                f"{page:<6}{token:<12}{str(in_docling):<10}{str(in_baidu):<9}{verdict}"
+            )
+    total = both + one + neither
+    print("-" * 74)
+    print(f"confirmed by both:      {both}")
+    print(f"confirmed by one only:  {one}")
+    print(f"confirmed by neither:   {neither}")
+    print(f"IDENTIFIER PRECISION {both + one}/{total} = {(both + one) / max(total, 1):.1%}")
+    print("Two readers missing the same identifier is still not proof of invention,")
+    print("but it is the strongest evidence available without reading the sheet.")
+    print("=" * 74)
