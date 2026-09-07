@@ -29,11 +29,11 @@ Given one real geotechnical report, the MVP should reliably produce:
 - Backend: FastAPI + Pydantic.
 - Database: PostgreSQL + PostGIS + pgvector later.
 - Document processing: Docling first; keep a swappable adapter for other layout/OCR tools.
-- Multimodal model: `unsloth/Qwen3.6-27B-NVFP4` as the first benchmark target.
+- Multimodal model: `Qwen/Qwen3.6-27B-FP8` as the first benchmark target.
 - Inference: vLLM on Modal L4, scale-to-zero.
 - Object storage: S3-compatible storage or Supabase Storage later.
 
-Docling currently supports PDF and DOCX and can export a lossless Docling JSON representation and chunked JSONL. PostGIS provides CRS-aware transformations via `ST_Transform`. The Unsloth Qwen3.6-27B NVFP4 model is published as Apache-2.0 and is documented as suitable for 24 GB VRAM; its model card provides vLLM serving instructions. See `docs/06_TECHNICAL_REFERENCES.md`.
+Docling currently supports PDF and DOCX and can export a lossless Docling JSON representation and chunked JSONL. PostGIS provides CRS-aware transformations via `ST_Transform`. The Qwen3.6-27B FP8 model is published as Apache-2.0, and vLLM's published recipe names it as the single-GPU variant for L40S and H100. It was measured resident in 41.74 GiB of an L40S's 47.37 GiB with a 572,347-token KV cache; see Decision 011. The NVFP4 build named here previously carries a "suitable for 24 GB VRAM" figure that describes native FP4 on Blackwell and does not apply to this hardware. See `docs/06_TECHNICAL_REFERENCES.md`.
 
 ## Non-goals for MVP
 
