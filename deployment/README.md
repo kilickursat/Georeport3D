@@ -16,8 +16,8 @@ returns a redacted error or evidence.
 
 - App: `georeport3d-qwen`
 - Class: `QwenWorker`
-- Model: `unsloth/Qwen3.6-27B-NVFP4`
-- Model revision: `ccdaab7e68af2409599b8949a8f2685703c9bae5`
+- Model: `Qwen/Qwen3.6-27B-FP8`
+- Model revision: `e89b16ebf1988b3d6befa7de50abc2d76f26eb09`
 - GitHub environment: `modal-production`
 - Modal environment `main`
 - Secret: `huggingface-secret`
