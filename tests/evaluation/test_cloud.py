@@ -6,7 +6,6 @@ import pytest
 
 from georeport3d.evaluation.cloud import resolve_dataset, validate_run_id
 
-
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "config" / "evaluation_datasets.yaml"
 
