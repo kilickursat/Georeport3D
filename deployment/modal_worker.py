@@ -27,6 +27,7 @@ MAX_MESSAGES_PER_REQUEST = 32
 MAX_CONTENT_PARTS_PER_MESSAGE = 16
 MAX_CONTENT_CHARS_PER_REQUEST = 4_000_000
 MAX_RESPONSE_SCHEMA_CHARS = 100_000
+MAX_RESPONSE_SCHEMA_DEPTH = 64
 ALLOWED_MESSAGE_ROLES = frozenset({"system", "user"})
 ALLOWED_IMAGE_PREFIXES = (
     "data:image/png;base64,",
@@ -154,12 +155,29 @@ def _server_is_alive(process: subprocess.Popen[str] | None) -> bool:
     return process is not None and process.poll() is None
 
 
+def _schema_exceeds_max_depth(value: object, *, depth: int = 0) -> bool:
+    """Bound nesting without depending on the interpreter recursion limit."""
+    if depth > MAX_RESPONSE_SCHEMA_DEPTH:
+        return True
+    if isinstance(value, dict):
+        return any(
+            _schema_exceeds_max_depth(item, depth=depth + 1)
+            for item in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(
+            _schema_exceeds_max_depth(item, depth=depth + 1) for item in value
+        )
+    return False
+
+
 def _validate_response_schema(response_schema: object) -> dict[str, object]:
     """Accept one bounded, JSON-serializable object response schema."""
     if (
         not isinstance(response_schema, dict)
         or not response_schema
         or response_schema.get("type") != "object"
+        or _schema_exceeds_max_depth(response_schema)
     ):
         raise ValueError("invalid request")
     try:
