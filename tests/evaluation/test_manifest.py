@@ -82,7 +82,7 @@ def test_field_gold_requires_a_safe_gold_reference() -> None:
 
 
 def test_non_gold_cases_cannot_smuggle_in_a_gold_reference() -> None:
-    with pytest.raises(ValidationError, match="only field_gold"):
+    with pytest.raises(ValidationError, match="only for field_gold"):
         DatasetCase.model_validate(_case(gold_reference="gold/not-reviewed.json"))
 
 

@@ -21,6 +21,7 @@ EXPECTED_MODEL_REVISION = "e89b16ebf1988b3d6befa7de50abc2d76f26eb09"
 PURE_HELPERS = {
     "_failure_result",
     "_parse_model_output",
+    "_schema_exceeds_max_depth",
     "_stop_process",
     "_success_result",
     "_validate_request",
@@ -77,6 +78,7 @@ def _load_helpers(*extra_helpers: str, **overrides: object) -> dict[str, object]
         "MAX_CONTENT_PARTS_PER_MESSAGE": 16,
         "MAX_CONTENT_CHARS_PER_REQUEST": 4_000_000,
         "MAX_RESPONSE_SCHEMA_CHARS": 100_000,
+        "MAX_RESPONSE_SCHEMA_DEPTH": 64,
         "ALLOWED_MESSAGE_ROLES": frozenset({"system", "user"}),
         "ALLOWED_IMAGE_PREFIXES": (
             "data:image/png;base64,",
@@ -504,6 +506,12 @@ class ModalWorkerContractTests(unittest.TestCase):
 
         recursive: dict[str, object] = {"type": "object"}
         recursive["self"] = recursive
+        deeply_nested: dict[str, object] = {"type": "object"}
+        cursor = deeply_nested
+        for _ in range(70):
+            child: dict[str, object] = {"type": "object"}
+            cursor["properties"] = {"child": child}
+            cursor = child
         invalid_schemas = [
             None,
             {},
@@ -512,6 +520,7 @@ class ModalWorkerContractTests(unittest.TestCase):
             {"type": "object", "default": float("nan")},
             {"type": "object", "default": object()},
             recursive,
+            deeply_nested,
             {"type": "object", "description": "x" * 81},
         ]
         for index, schema in enumerate(invalid_schemas):

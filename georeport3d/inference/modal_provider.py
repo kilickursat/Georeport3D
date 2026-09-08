@@ -16,6 +16,7 @@ from georeport3d.inference.base import (
 )
 
 MAX_RESPONSE_SCHEMA_CHARS = 100_000
+MAX_RESPONSE_SCHEMA_DEPTH = 64
 
 _FAILURE_MESSAGES = {
     "INVALID_REQUEST": "request was invalid",
@@ -36,9 +37,30 @@ def _invalid_response() -> InferenceUnavailableError:
     return InferenceUnavailableError("Modal worker returned an invalid response")
 
 
+def _schema_exceeds_max_depth(value: object, *, depth: int = 0) -> bool:
+    """Bound nesting without depending on the interpreter recursion limit."""
+    if depth > MAX_RESPONSE_SCHEMA_DEPTH:
+        return True
+    if isinstance(value, dict):
+        return any(
+            _schema_exceeds_max_depth(item, depth=depth + 1)
+            for item in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(
+            _schema_exceeds_max_depth(item, depth=depth + 1) for item in value
+        )
+    return False
+
+
 def _validated_response_schema(schema: object) -> dict[str, object]:
     """Return an isolated JSON schema or reject it before any remote call."""
-    if not isinstance(schema, dict) or not schema or schema.get("type") != "object":
+    if (
+        not isinstance(schema, dict)
+        or not schema
+        or schema.get("type") != "object"
+        or _schema_exceeds_max_depth(schema)
+    ):
         raise InferenceUnavailableError("Modal inference request schema is invalid")
     try:
         serialized = json.dumps(
