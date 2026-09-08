@@ -8,7 +8,7 @@ arbitrary file/network access interface.
 from __future__ import annotations
 
 import re
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
@@ -18,7 +18,7 @@ _DATASET_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
-class AnnotationStatus(str, Enum):
+class AnnotationStatus(StrEnum):
     """How much human-reviewed truth a dataset case contains."""
 
     UNANNOTATED = "unannotated"
@@ -26,12 +26,12 @@ class AnnotationStatus(str, Enum):
     FIELD_GOLD = "field_gold"
 
 
-class SourceFormat(str, Enum):
+class SourceFormat(StrEnum):
     PDF = "pdf"
     DOCX = "docx"
 
 
-class EvaluationMetric(str, Enum):
+class EvaluationMetric(StrEnum):
     """Metric names whose eligibility depends on annotation maturity."""
 
     DIAGNOSTIC_TOKEN_RECALL = "diagnostic_token_recall"

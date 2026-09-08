@@ -15,7 +15,6 @@ from georeport3d.inference.base import (
     InferenceUnavailableError,
 )
 
-
 MAX_RESPONSE_SCHEMA_CHARS = 100_000
 
 _FAILURE_MESSAGES = {
