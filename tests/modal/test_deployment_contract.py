@@ -66,8 +66,8 @@ def _load_settings_model_validator(source: str) -> object:
     )
     ast.fix_missing_locations(module)
     namespace: dict[str, object] = {
-        "MODEL_ID": "unsloth/Qwen3.6-27B-NVFP4",
-        "MODEL_REVISION": "ccdaab7e68af2409599b8949a8f2685703c9bae5",
+        "MODEL_ID": "Qwen/Qwen3.6-27B-FP8",
+        "MODEL_REVISION": "e89b16ebf1988b3d6befa7de50abc2d76f26eb09",
     }
     exec(compile(module, "georeport3d/config.py", "exec"), namespace)
     return namespace["forbid_mock_in_production"]
@@ -196,8 +196,8 @@ class DeploymentContractTests(unittest.TestCase):
 
     def test_modal_settings_require_the_exact_source_identity(self) -> None:
         validator = _load_settings_model_validator(self.config_source)
-        expected_id = "unsloth/Qwen3.6-27B-NVFP4"
-        expected_revision = "ccdaab7e68af2409599b8949a8f2685703c9bae5"
+        expected_id = "Qwen/Qwen3.6-27B-FP8"
+        expected_revision = "e89b16ebf1988b3d6befa7de50abc2d76f26eb09"
         valid = types.SimpleNamespace(
             app_env="test",
             inference_provider="modal",

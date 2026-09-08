@@ -14,7 +14,14 @@ def validate_model_revision(value: object) -> str:
     return value
 
 
-MODEL_ID = "unsloth/Qwen3.6-27B-NVFP4"
+# Was `unsloth/Qwen3.6-27B-NVFP4` until this checkpoint was actually run. Unsloth's
+# Dynamic NVFP4 keeps most layers at W4A4 rather than W4A16, so it needs Blackwell's
+# FP4 tensor cores; on Ada and Hopper vLLM falls back to Marlin, which Unsloth
+# documents as causing severe degradation, and which measured at ~36.8 GiB of VRAM
+# against 21.8 GiB on disk. vLLM's own recipe for this model names the FP8 build as
+# the single-GPU variant for L40S and H100, which is the hardware this project
+# deploys on. Same architecture and the same vision capability, no forced kernels.
+MODEL_ID = "Qwen/Qwen3.6-27B-FP8"
 MODEL_REVISION = validate_model_revision(
-    "ccdaab7e68af2409599b8949a8f2685703c9bae5"
+    "e89b16ebf1988b3d6befa7de50abc2d76f26eb09"
 )

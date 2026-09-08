@@ -66,8 +66,10 @@ carries the full register with per-item evidence requirements.
 | Domain models, evidence and depth validation | Implemented and tested |
 | Budget ledger and canonical cache key | Implemented, in-memory only |
 | PostGIS schema and Alembic baseline | Migration verified against PostGIS 17-3.5 in CI |
-| Modal worker declaration (vLLM, L40S, scale-to-zero) | Declared and contract-tested, never deployed |
-| Document pipeline (Docling adapter, inventory, figure routing) | Implemented at code level; not wired to an API route or target-proven |
+| Modal worker declaration (vLLM, L40S, scale-to-zero) | Declared and contract-tested; the worker itself has never been deployed |
+| Model fit on the deployment GPU | **Measured.** `Qwen/Qwen3.6-27B-FP8` loads on one L40S in 293.7 s, 41.74 GiB of 47.37 GiB resident, 572,347-token KV cache. See [Decision 011](docs/17_CHANGE_LOG_AND_DECISIONS.md) |
+| Vision extraction accuracy | **Unproven.** A model reads a drawing sheet in 64.1 s for ~$0.035 and recalls 29/30 known tokens, but those are strata and place names. Of eighteen borehole identifiers it reported, OCR could confirm ten, and that number cannot yet separate a misread from an invention |
+| Document pipeline (Docling adapter, inventory, figure routing) | Implemented at code level; not wired to an API route. Full-page drawing sheets route on structure as `drawing_sheet` with no type asserted |
 | Geology (CRS transforms, borehole geometry) | Not started |
 | Job orchestration and extraction endpoints | Not started |
 | Web application and 3D viewer | Not started |
@@ -83,7 +85,7 @@ flowchart LR
   F --> C{Cache hit?}
   C -- yes --> V[Validated result]
   C -- no --> B[Budget estimate + explicit authorization]
-  B --> M[Modal L40S · Qwen3.6-27B-NVFP4 · vLLM]
+  B --> M[Modal L40S · Qwen3.6-27B-FP8 · vLLM]
   M --> P[Schema + evidence validation]
   P --> V
   V --> D[(PostGIS)]
@@ -158,7 +160,7 @@ service container, on each pull request.
 ## Deployment
 
 Production inference runs on Modal serverless GPU — up to two L40S containers serving
-`unsloth/Qwen3.6-27B-NVFP4` under vLLM, pinned to an exact revision, scaling to zero with no
+`Qwen/Qwen3.6-27B-FP8` under vLLM, pinned to an exact revision, scaling to zero with no
 automatic retries. Model weights live inside the Modal container and are never downloaded to a
 workstation or a CI runner.
 
@@ -211,7 +213,7 @@ cost boundaries, and the evidence required before and after a deploy.
 
 [Modal](https://modal.com/) ·
 [vLLM](https://github.com/vllm-project/vllm) ·
-[Qwen3.6-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.6-27B-NVFP4) ·
+[Qwen3.6-27B-FP8](https://huggingface.co/Qwen/Qwen3.6-27B-FP8) ·
 [Hugging Face Hub](https://huggingface.co/) ·
 [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) ·
 [FlashInfer](https://github.com/flashinfer-ai/flashinfer) ·
@@ -272,9 +274,8 @@ it. Particular thanks to:
   model is asked about it.
 - **[vLLM](https://github.com/vllm-project/vllm)** for the serving layer that makes a 27B model
   practical on a single GPU.
-- **[Qwen](https://github.com/QwenLM)**, from Alibaba, for the vision-language model, and
-  **[Unsloth](https://huggingface.co/unsloth)** for the NVFP4 quantisation that lets it fit on
-  24 GB.
+- **[Qwen](https://github.com/QwenLM)**, from Alibaba, for the vision-language model and the
+  FP8 build that fits it on a single 48 GB GPU.
 - **[PostGIS](https://postgis.net/)** and the wider [OSGeo](https://www.osgeo.org/) community,
   whose work underpins every spatial guarantee this project makes.
 - **[SQLAlchemy](https://www.sqlalchemy.org/)** and **[Alembic](https://alembic.sqlalchemy.org/)**
