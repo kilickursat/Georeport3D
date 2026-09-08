@@ -3,10 +3,21 @@ from __future__ import annotations
 import math
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class Evidence(BaseModel):
+class _StrictExtractionModel(BaseModel):
+    """Base for data crossing the model-to-domain trust boundary.
+
+    Silently ignoring a model-invented key makes a response look accepted while
+    discarding part of its meaning.  Forbidding extras also closes every object in
+    the generated JSON Schema used by the inference worker.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class Evidence(_StrictExtractionModel):
     document_id: str
     page_number: int = Field(ge=1)
     source_type: Literal[
@@ -41,7 +52,7 @@ class Evidence(BaseModel):
         return self
 
 
-class Collar(BaseModel):
+class Collar(_StrictExtractionModel):
     easting: float | None = None
     northing: float | None = None
     elevation: float | None = None
@@ -54,7 +65,7 @@ class Collar(BaseModel):
         return self
 
 
-class BoreholeInterval(BaseModel):
+class BoreholeInterval(_StrictExtractionModel):
     depth_from: float = Field(ge=0)
     depth_to: float = Field(ge=0)
     lithology: str = Field(min_length=1)
@@ -71,7 +82,7 @@ class BoreholeInterval(BaseModel):
         return self
 
 
-class Borehole(BaseModel):
+class Borehole(_StrictExtractionModel):
     borehole_id: str
     collar: Collar | None = None
     total_depth: float | None = Field(default=None, ge=0)
@@ -79,7 +90,7 @@ class Borehole(BaseModel):
     evidence: list[Evidence] = Field(min_length=1)
 
 
-class GeologicalContact(BaseModel):
+class GeologicalContact(_StrictExtractionModel):
     contact_id: str
     unit_a: str
     unit_b: str
@@ -89,7 +100,7 @@ class GeologicalContact(BaseModel):
     evidence: list[Evidence] = Field(min_length=1)
 
 
-class Section(BaseModel):
+class Section(_StrictExtractionModel):
     section_id: str
     start_xy: list[float] | None = None
     end_xy: list[float] | None = None
@@ -99,7 +110,7 @@ class Section(BaseModel):
     evidence: list[Evidence] = Field(min_length=1)
 
 
-class GeotechnicalExtraction(BaseModel):
+class GeotechnicalExtraction(_StrictExtractionModel):
     document_id: str
     boreholes: list[Borehole] = Field(default_factory=list)
     contacts: list[GeologicalContact] = Field(default_factory=list)

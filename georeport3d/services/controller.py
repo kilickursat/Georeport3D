@@ -19,7 +19,7 @@ and let the budget be spent again.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID
@@ -34,7 +34,8 @@ from georeport3d.db.repositories import (
     UsageRepository,
 )
 from georeport3d.db.session import unit_of_work
-from georeport3d.domain.models import GeotechnicalExtraction
+from georeport3d.domain.models import Evidence, GeotechnicalExtraction
+from georeport3d.domain.validation import validate_extraction
 from georeport3d.inference.base import (
     InferenceMetadata,
     InferenceProvider,
@@ -218,6 +219,7 @@ class JobController:
             prompt_version=self._settings.prompt_version,
             preprocess_version=self._settings.preprocess_version,
             model_revision=self._settings.model_revision,
+            response_schema=GeotechnicalExtraction.model_json_schema(),
         )
 
         # Outside any transaction: this is a remote call that may start a container,
@@ -413,7 +415,41 @@ class JobController:
         )
 
     @staticmethod
-    def _provenance_matches(extraction: GeotechnicalExtraction, document_id: UUID) -> bool:
+    def _all_evidence(extraction: GeotechnicalExtraction) -> Iterator[Evidence]:
+        """Yield every citation carried by the extraction contract."""
+        for borehole in extraction.boreholes:
+            yield from borehole.evidence
+            for interval in borehole.intervals:
+                yield from interval.evidence
+        for contact in extraction.contacts:
+            yield from contact.evidence
+        for section in extraction.sections:
+            yield from section.evidence
+
+    @classmethod
+    def _stamp_evidence_identity(
+        cls,
+        extraction: GeotechnicalExtraction,
+        metadata: InferenceMetadata,
+    ) -> None:
+        """Replace model-authored identity with the verified result identity.
+
+        Metadata is checked against server settings before this method is called.
+        Evidence identity is therefore derived from the authorized invocation, not
+        from fields the model can invent in its JSON response.
+        """
+        for evidence in cls._all_evidence(extraction):
+            evidence.model_id = metadata.model_id
+            evidence.model_revision = metadata.model_revision
+            evidence.prompt_version = metadata.prompt_version
+            evidence.preprocess_version = metadata.preprocess_version
+
+    @classmethod
+    def _provenance_matches(
+        cls,
+        extraction: GeotechnicalExtraction,
+        document_id: UUID,
+    ) -> bool:
         """Whether the extraction and every citation in it name this document.
 
         A model can return a well-formed extraction about the wrong document. Storing
@@ -423,13 +459,7 @@ class JobController:
         expected = str(document_id)
         if extraction.document_id != expected:
             return False
-        for borehole in extraction.boreholes:
-            citations = list(borehole.evidence)
-            for interval in borehole.intervals:
-                citations.extend(interval.evidence)
-            if any(evidence.document_id != expected for evidence in citations):
-                return False
-        return True
+        return all(evidence.document_id == expected for evidence in cls._all_evidence(extraction))
 
     def _settle(
         self,
@@ -463,11 +493,28 @@ class JobController:
                 job_id, "VALIDATING", "SCHEMA_VALIDATION_FAILED", estimate, elapsed_seconds
             )
 
+        # The provider metadata has already been matched to the server-authorized
+        # identity. Stamp it before any provenance or domain decision so no
+        # model-authored identity can influence validation or reach persistence.
+        self._stamp_evidence_identity(extraction, result.metadata)
+
         if not self._provenance_matches(extraction, document_id):
             return self._reconcile_failure(
                 job_id, "VALIDATING", "DOCUMENT_PROVENANCE_MISMATCH", estimate, elapsed_seconds
             )
 
+        try:
+            validation = validate_extraction(extraction)
+        except Exception:  # noqa: BLE001 - validation defects must still reconcile spend
+            return self._reconcile_failure(
+                job_id, "VALIDATING", "DOMAIN_VALIDATION_FAILED", estimate, elapsed_seconds
+            )
+        if not validation.accepted:
+            return self._reconcile_failure(
+                job_id, "VALIDATING", "DOMAIN_VALIDATION_FAILED", estimate, elapsed_seconds
+            )
+
+        normalized_output: dict[str, object] = extraction.model_dump(mode="json")
         actual_usd = self.price_usd(elapsed_seconds)
         with unit_of_work(self._sessions) as session:
             jobs = InferenceJobRepository(session)
@@ -482,7 +529,7 @@ class JobController:
                 model_revision=self._settings.model_revision,
                 prompt_version=self._settings.prompt_version,
                 preprocess_version=self._settings.preprocess_version,
-                result=result.output,
+                result=normalized_output,
             )
             UsageRepository(session).record(
                 inference_job_id=job_id,
@@ -507,7 +554,7 @@ class JobController:
             cache_hit=False,
             estimated_usd=estimate,
             actual_usd=actual_usd,
-            output=result.output,
+            output=normalized_output,
         )
 
     def _reconcile_failure(

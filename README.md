@@ -15,7 +15,7 @@
 <h1 align="center">GeoReport3D</h1>
 
 <p align="center">
-  <strong>Turn geotechnical reports into verifiable 3D ground models — without inventing a single coordinate.</strong>
+  <strong>Turn geotechnical reports into verifiable 3D ground models - without inventing a single coordinate.</strong>
 </p>
 
 <p align="center">
@@ -42,74 +42,80 @@
 
 ---
 
-Geotechnical ground truth is locked inside PDFs. Borehole logs, cross-sections, and lab tables
-are drawn for humans, scattered across hundreds of pages, and rarely survive into a usable
-spatial model. GeoReport3D extracts that evidence with a multimodal model, refuses to emit
-anything it cannot cite back to a source page, and stores the result as queryable PostGIS
-geometry ready for 3D visualization.
+## Pre-release status
 
-The distinguishing constraint is provenance. Every extracted borehole, interval, and contact
-carries the document, page, and bounding box it came from, plus a confidence score and an
-explicit separation between what was *observed* and what was *inferred*. An extraction with no
-evidence is rejected rather than stored.
+**GeoReport3D is not production ready and must not be exposed publicly.** The repository
+contains a tested backend foundation and a code-level Modal design, but it does not yet contain
+an end-to-end analysis route, a production deployment proven from this revision, or a web/3D
+application.
 
-## Project status
+GeoReport3D is designed to turn evidence in geotechnical reports into structured observations.
+The central rule is provenance: an accepted borehole, interval, contact, or section must cite
+the source document and page region. Missing or unreadable values remain unknown rather than
+being guessed.
 
-**Pre-release. Not production ready, and not safe to expose publicly.** This repository is an
-engineered foundation with verified contracts, not a finished application. The table below is
-the honest state; the [pre-deployment readiness audit](docs/19_PRE_DEPLOYMENT_READINESS.md)
-carries the full register with per-item evidence requirements.
-
-| Component | State |
+| Component | Current state |
 | --- | --- |
-| Upload, streaming, SHA-256 hashing, bounded storage | Implemented; canonical PDF/DOCX suffixes preserved |
-| Domain models, evidence and depth validation | Implemented and tested |
-| Budget ledger and canonical cache key | Implemented, in-memory only |
-| PostGIS schema and Alembic baseline | Migration verified against PostGIS 17-3.5 in CI |
-| Modal worker declaration (vLLM, L40S, scale-to-zero) | Declared and contract-tested; the worker itself has never been deployed |
-| Model fit on the deployment GPU | **Measured.** `Qwen/Qwen3.6-27B-FP8` loads on one L40S in 293.7 s, 41.74 GiB of 47.37 GiB resident, 572,347-token KV cache. See [Decision 011](docs/17_CHANGE_LOG_AND_DECISIONS.md) |
-| Vision extraction accuracy | **Unproven.** A model reads a drawing sheet in 64.1 s for ~$0.035 and recalls 29/30 known tokens, but those are strata and place names. Of eighteen borehole identifiers it reported, OCR could confirm ten, and that number cannot yet separate a misread from an invention |
-| Document pipeline (Docling adapter, inventory, figure routing) | Implemented at code level; not wired to an API route. Full-page drawing sheets route on structure as `drawing_sheet` with no type asserted |
-| Geology (CRS transforms, borehole geometry) | Not started |
-| Job orchestration and extraction endpoints | Not started |
-| Web application and 3D viewer | Not started |
+| Upload, project creation, project upload | Implemented; documents are bounded, streamed, hashed, and stored on the local filesystem for development |
+| Inventory and estimate API routes | Implemented for PDF/DOCX through the document adapter |
+| Job-status API route | Implemented against durable job records |
+| Domain schema and validation | Implemented for extractions, evidence, depth rules, and document provenance |
+| PostGIS repositories, budget, cache, job state | Implemented and tested; the durable `JobController` enforces cache, authorization, inference, validation, and persistence order |
+| Analysis path | Incomplete: `/analyze`, versioned prompt assembly, page rendering/task assembly, cancel, extraction, borehole, section, and page-evidence routes are absent |
+| Document representation | The compact Docling inventory is suitable for routing, but is not yet a lossless canonical Docling JSON extraction input |
+| DOCX evidence | Semantic inventory is available; pagination is synthetic and fixed-layout visual/page evidence is unsupported |
+| Modal production worker | Code-level only: one L40S profile, maximum two containers, bounded startup settings aligned with the successful probe, non-thinking Qwen calls, and vLLM JSON Schema structured output |
+| Document evaluation harness | Code-level only: metadata manifest, exact-match diagnostics, private Modal Volumes, and a protected manual workflow; no evaluation was run for this change |
+| Extraction accuracy | Unproven: the existing DART case is `provisional_tokens`, not field-level ground truth |
+| Geology transforms and observed 3D geometry | Not started |
+| Web application and 3D viewer | Not started; no frontend source exists |
 | Authentication and authorization | Not present |
 
-## How it works
+Historic `29/30` token recall and `10/18` identifier confirmation figures are not accuracy,
+precision, or release evidence. The first came from a narrow provisional token list; the second
+used unsafe substring matching. Neither is a current product claim. See the detailed
+[document extraction benchmark readiness register](docs/20_DOCUMENT_EXTRACTION_BENCHMARK_READINESS.md)
+and the approved [cloud harness design](docs/superpowers/specs/2026-09-08-cloud-document-extraction-harness-design.md).
+
+## Intended flow
 
 ```mermaid
 flowchart LR
-  U[Upload PDF / DOCX] --> H[SHA-256 + bounded store]
-  H --> I[CPU document inventory]
-  I --> F[Figure and borehole-log detection]
-  F --> C{Cache hit?}
-  C -- yes --> V[Validated result]
-  C -- no --> B[Budget estimate + explicit authorization]
-  B --> M[Modal L40S · Qwen3.6-27B-FP8 · vLLM]
-  M --> P[Schema + evidence validation]
-  P --> V
+  U["Upload PDF or DOCX"] --> I["CPU document inventory"]
+  I --> E["Estimate and explicit authorization"]
+  E --> C["Durable cache and JobController"]
+  C --> M["Modal L40S: Qwen3.6-27B-FP8"]
+  M --> V["Schema, domain, and evidence validation"]
   V --> D[(PostGIS)]
-  D --> W[CesiumJS context + Three.js geometry]
+  D --> W["Planned CesiumJS and Three.js viewer"]
 ```
 
-Cost governance is structural, not advisory. An upload never triggers inference. Every GPU call
-must pass a cache lookup, a workload estimate, and a budget reservation first, and the container
-scales to zero with a hard ceiling of one instance.
+The upload, inventory, estimate, status, persistence, and controller pieces exist. The API path
+that assembles a versioned extraction request and invokes the controller does not. An upload or
+estimate therefore cannot start a GPU call today.
 
-## Design principles
+## Safety and cloud boundary
 
-- **No invented data.** The model may not fabricate coordinates, choose an undocumented CRS,
-  interpolate surfaces, or silently reconcile contradictory evidence. Missing values are `null`.
-- **Provenance or rejection.** Every observation links to a document, page, and region. Records
-  without evidence do not persist.
-- **Native coordinates are authoritative.** Original easting/northing and the source CRS are
-  preserved. Labelling arbitrary coordinates as WGS84 is treated as a defect, not a shortcut.
-- **CPU first.** Text and structured tables are parsed deterministically. The GPU is reserved for
-  genuinely visual work such as borehole log figures and cross-sections.
-- **Fakes cannot reach production.** The deterministic mock provider is available for development
-  and tests, and production startup rejects it outright.
+- Pull-request CI is GPU-free and receives no Modal or Hugging Face credentials.
+- This workflow never downloads model weights or copies reports, page images, OCR text, prompts,
+  or raw model output onto developer machines or GitHub runners. The pre-existing ignored local
+  test PDF is not opened, uploaded, or recommitted by this change.
+- The DART source PDF and prior raw benchmark results are removed from the current tracked tree.
+  A normal commit does not erase older Git objects; any history rewrite is a separate maintainer
+  decision.
+- Paid evaluation is `workflow_dispatch` only, requires the protected `modal-evaluation`
+  environment, and returns only a sanitized summary. Production deployment is a separate manual
+  workflow.
+- Hugging Face access is supplied by the Modal secret `huggingface-secret`. The repository-level
+  `HF_TOKEN` is unused by this topology and should be removed or rotated by the repository owner
+  after confirming no external workflow relies on it.
+- The API's current filesystem store is for local development only. Cloud object storage and
+  production data-retention controls remain required.
 
-## Quickstart
+The [Modal runbook](deployment/README.md) describes the exact data paths, integrity check, manual
+evaluation command, and production boundary.
+
+## Quickstart: GPU-free development
 
 Requires Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/).
 
@@ -118,33 +124,35 @@ uv sync --extra dev
 uv run uvicorn apps.api.app.main:app --reload
 ```
 
-This runs the API with the deterministic mock inference provider. No model weights are
-downloaded, and no GPU or paid service is contacted. Upload streams, hashes, and stores a
-document; it never starts inference.
+The default development provider is deterministic and does not download a model or contact a
+GPU service. Uploads go to the configured local development store. Do not run Docling, render
+customer documents, or install/model-test the Modal stack on a restricted workstation; use the
+reviewed cloud workflow for those workloads.
 
-Optional extras: `--extra document` for the Docling pipeline dependencies, `--extra modal` for
-the Modal client SDK.
+Optional dependency groups are `document` for Docling and `modal` for the Modal client. They are
+not required for the core GPU-free tests.
 
-The document boundary is intentionally conservative. New local uploads are published as
-`<document_id>.pdf` or `<document_id>.docx`, so a fresh process can recover the validated source
-format from durable state. Old `<document_id>.bin` files have no trustworthy persisted format and
-must be re-uploaded or verified and migrated explicitly; the store will not guess from their
-contents. `DoclingDocumentParser` defaults to `max_pages=500`, but this is a **post-conversion**
-guard: it blocks oversized normalized inventories, not Docling's conversion work. DOCX ordinals
-and unplaced PDF content are marked as synthetic per page. Synthetic content remains visible in
-inventory, but durable page evidence is rejected until the evidence schema can store pagination
-truth without pretending an ordinal is a printed source page.
+## Document and evidence limits
 
-## Development
+PDF pages can carry printed-page evidence when the parser supplies valid page geometry. DOCX is a
+flow format in the current adapter: its page ordinals are synthetic, so they cannot be presented
+as printed-page evidence. A future Modal-only fixed-layout conversion must record the converter,
+version, derivative hash, and coordinate transform before DOCX visual evidence can be accepted.
+
+The current document inventory intentionally condenses Docling output for candidate routing. The
+planned extraction path retains canonical Docling JSON, hierarchy, tables, reading order, item
+references, and provenance rather than treating flattened page text as ground truth.
+
+## Development gates
 
 ```bash
-uv run ruff check .          # lint
-uv run pytest -q             # full suite, GPU-free
-uv run python -m build       # isolated package build
+uv run ruff check .
+uv run pytest -q
+uv run python -m build
 ```
 
-The PostGIS integration test is opt-in and refuses any target that is not a loopback database
-whose name ends in `_test`:
+The full default suite is GPU-free. The PostGIS integration test is opt-in and refuses any target
+that is not a loopback database whose name ends in `_test`:
 
 ```bash
 docker compose up -d db
@@ -153,20 +161,31 @@ TEST_DATABASE_URL='postgresql+psycopg://postgres:postgres@localhost:5432/georepo
 uv run pytest -q -m integration
 ```
 
-Alembic is the authoritative schema; `database/schema.sql` is only a labelled review snapshot.
-CI runs every gate above on Python 3.12 and 3.13, plus the migration against a real PostGIS
-service container, on each pull request.
+Alembic is authoritative; `database/schema.sql` is a labelled review snapshot.
 
-## Deployment
+## Modal inference
 
-Production inference runs on Modal serverless GPU — up to two L40S containers serving
-`Qwen/Qwen3.6-27B-FP8` under vLLM, pinned to an exact revision, scaling to zero with no
-automatic retries. Model weights live inside the Modal container and are never downloaded to a
-workstation or a CI runner.
+The production declaration targets `Qwen/Qwen3.6-27B-FP8` at a pinned revision under vLLM on an
+L40S. Its startup command now matches the successful probe's CUDA library path, 32,768-token
+context limit, 16-sequence limit, and one-image-per-prompt bound. Requests carry the exact
+Pydantic response schema; vLLM constrains output to that schema and Qwen thinking mode is
+disabled.
 
-Deployment is manual, gated behind a reviewer approval environment, and never triggered by a
-pull request. See the [Modal deployment guide](deployment/README.md) for the operator runbook,
-cost boundaries, and the evidence required before and after a deploy.
+Those are source and contract-test facts, not new deployment evidence. This revision has not
+built the image, started vLLM, loaded the model, run a document, measured cost, or observed
+scale-to-zero. Production remains manual and separate from evaluation.
+
+## Mapping and 3D rendering
+
+The target browser stack is unchanged:
+
+- **CesiumJS and 3D Tiles** provide globe/geospatial context, terrain, coordinate-aware camera
+  behavior, and large geospatial datasets.
+- **Three.js through React Three Fiber** renders engineering geometry such as boreholes,
+  intervals, contacts, sections, and uncertainty overlays.
+
+These responsibilities are planned in [the geospatial and 3D viewer design](docs/09_GEOSPATIAL_AND_3D_VIEWER.md).
+There is no `apps/web` implementation yet.
 
 ## Documentation
 
@@ -174,125 +193,39 @@ cost boundaries, and the evidence required before and after a deploy.
 | --- | --- |
 | [Executive overview](docs/00_EXECUTIVE_OVERVIEW.md) | Problem, product shape, and scope |
 | [System architecture](docs/02_SYSTEM_ARCHITECTURE.md) | Services, boundaries, and data flow |
-| [AI pipeline](docs/04_AI_PIPELINE.md) | Model strategy, routing, prompt requirements, caching |
+| [AI pipeline](docs/04_AI_PIPELINE.md) | Routing, prompting, caching, and validation strategy |
 | [Data contract](docs/05_DATA_CONTRACT.md) | Extraction schema and provenance rules |
-| [Modelling and uncertainty](docs/08_GEOTECHNICAL_MODELING_AND_UNCERTAINTY.md) | Observed vs inferred geology |
-| [Geospatial and 3D viewer](docs/09_GEOSPATIAL_AND_3D_VIEWER.md) | CesiumJS and Three.js responsibilities |
-| [API and job state](docs/10_API_AND_JOB_STATE.md) | Endpoints and the job state machine |
-| [Security and data policy](docs/11_SECURITY_AND_DATA_POLICY.md) | Handling confidential reports |
-| [Readiness register](docs/19_PRE_DEPLOYMENT_READINESS.md) | Per-item deployment evidence |
+| [API and job state](docs/10_API_AND_JOB_STATE.md) | Target endpoints and state machine |
+| [Pre-deployment readiness](docs/19_PRE_DEPLOYMENT_READINESS.md) | Cross-project deployment gates |
+| [Extraction benchmark readiness](docs/20_DOCUMENT_EXTRACTION_BENCHMARK_READINESS.md) | Fake, stale, provisional, blocked, and required benchmark state |
+| [Cloud harness design](docs/superpowers/specs/2026-09-08-cloud-document-extraction-harness-design.md) | Safe Modal-only extraction evaluation architecture |
 
 ## Technology
 
-**Application and API**
-
-[Python](https://www.python.org/) 3.12–3.13 ·
-[FastAPI](https://fastapi.tiangolo.com/) ·
-[Uvicorn](https://github.com/Kludex/uvicorn) ·
-[Pydantic](https://docs.pydantic.dev/) ·
-[pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) ·
-[python-multipart](https://github.com/Kludex/python-multipart) ·
-[orjson](https://github.com/ijl/orjson) ·
-[PyYAML](https://pyyaml.org/)
-
-**Spatial data store**
-
-[PostgreSQL](https://www.postgresql.org/) ·
-[PostGIS](https://postgis.net/) ·
-[SQLAlchemy](https://www.sqlalchemy.org/) ·
-[GeoAlchemy 2](https://geoalchemy-2.readthedocs.io/) ·
-[Alembic](https://alembic.sqlalchemy.org/) ·
-[psycopg 3](https://www.psycopg.org/psycopg3/)
-
-**Document processing**
-
-[Docling](https://github.com/docling-project/docling) ·
-[python-docx](https://python-docx.readthedocs.io/)
-
-**Inference**
-
-[Modal](https://modal.com/) ·
-[vLLM](https://github.com/vllm-project/vllm) ·
-[Qwen3.6-27B-FP8](https://huggingface.co/Qwen/Qwen3.6-27B-FP8) ·
-[Hugging Face Hub](https://huggingface.co/) ·
-[NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) ·
-[FlashInfer](https://github.com/flashinfer-ai/flashinfer) ·
-[CUTLASS](https://github.com/NVIDIA/cutlass) ·
-[OpenAI Python client](https://github.com/openai/openai-python) (for vLLM's OpenAI-compatible API)
-
-**Tooling and CI**
-
-[uv](https://docs.astral.sh/uv/) ·
-[Ruff](https://docs.astral.sh/ruff/) ·
-[pytest](https://docs.pytest.org/) ·
-[setuptools](https://setuptools.pypa.io/) ·
-[build](https://build.pypa.io/) ·
-[Docker](https://www.docker.com/) ·
-[GitHub Actions](https://github.com/features/actions)
-
-**Web and 3D viewer — planned, not yet implemented**
-
-[Next.js](https://nextjs.org/) ·
-[React](https://react.dev/) ·
-[CesiumJS](https://cesium.com/platform/cesiumjs/) ·
-[Three.js](https://threejs.org/) ·
-[React Three Fiber](https://r3f.docs.pmnd.rs/)
-
-These are the documented target stack for the browser application. See the status table above:
-no frontend source exists yet.
+- API: Python 3.12/3.13, FastAPI, Pydantic, Uvicorn
+- Data: PostgreSQL, PostGIS, SQLAlchemy, GeoAlchemy 2, Alembic
+- Documents: Docling and python-docx
+- Inference: Modal, vLLM, `Qwen/Qwen3.6-27B-FP8`, CUDA
+- Tooling: uv, Ruff, pytest, Docker, GitHub Actions
+- Planned web: Next.js, React, CesiumJS, Three.js, React Three Fiber
 
 ## Contributing
 
-Contributions are welcome. Every pull request must keep the CI gates green: Ruff, the full test
-suite on both supported Python versions, the isolated build, the API import, and the PostGIS
-migration.
+Pull requests must keep the GPU-free CI gates green. Never commit credentials, uploaded reports,
+raw OCR/model output, page images, model weights, or generated benchmark artifacts. Extraction
+code must not emit coordinates, CRS values, contacts, or other observations without source
+evidence.
 
-Two rules are non-negotiable in review. Extraction code must never produce a coordinate, CRS, or
-geological contact that is not traceable to source evidence. Generated artifacts, credentials,
-uploaded documents, model weights, and provider logs must never be committed.
+## Support and acknowledgements
 
-## Support
+GeoReport3D is an Apache-2.0 side project of **geotechCLI**. If it is useful to you,
+[membership on Patreon](https://www.patreon.com/cw/geotechCLI/membership) supports continued
+development without changing the project's evidence rules.
 
-GeoReport3D is a side project of **geotechCLI**, built in the open and released under Apache 2.0.
-There is no company behind it. The GPU hours that turn claims in this README into measurements —
-every benchmark, every real-report run — are paid for directly.
-
-If the project is useful to you, [membership on Patreon](https://www.patreon.com/cw/geotechCLI/membership)
-supports its continued development.
-
-Support does not buy influence over what the project will and will not assert. The provenance
-rules under [Contributing](#contributing) apply the same way to a sponsor, a contributor, and a
-maintainer: an extraction with no evidence behind it is rejected, whoever is asking for it.
-
-## Acknowledgements
-
-GeoReport3D is assembled from open-source work by others, and it would not be feasible without
-it. Particular thanks to:
-
-- **[Docling](https://github.com/docling-project/docling)**, from IBM Research, which does the
-  document conversion this project depends on to decide what a page actually contains before any
-  model is asked about it.
-- **[vLLM](https://github.com/vllm-project/vllm)** for the serving layer that makes a 27B model
-  practical on a single GPU.
-- **[Qwen](https://github.com/QwenLM)**, from Alibaba, for the vision-language model and the
-  FP8 build that fits it on a single 48 GB GPU.
-- **[PostGIS](https://postgis.net/)** and the wider [OSGeo](https://www.osgeo.org/) community,
-  whose work underpins every spatial guarantee this project makes.
-- **[SQLAlchemy](https://www.sqlalchemy.org/)** and **[Alembic](https://alembic.sqlalchemy.org/)**
-  for a data layer strict enough to encode geotechnical constraints in the schema itself.
-- **[FastAPI](https://fastapi.tiangolo.com/)** and **[Pydantic](https://docs.pydantic.dev/)**,
-  which make validation-first API design the path of least resistance.
-- **[Astral](https://astral.sh/)** for [uv](https://docs.astral.sh/uv/) and
-  [Ruff](https://docs.astral.sh/ruff/).
-- **[Modal](https://modal.com/)** for serverless GPU with scale-to-zero, without which the cost
-  model for this project would not work.
-- **[CesiumJS](https://cesium.com/platform/cesiumjs/)**, **[Three.js](https://threejs.org/)**, and
-  **[React Three Fiber](https://r3f.docs.pmnd.rs/)** for the rendering stack the viewer is
-  designed around.
-
-Listing a project here records a dependency and our gratitude for it. It does not imply that its
-authors endorse, review, or support GeoReport3D.
+The project depends on open-source work including Docling, vLLM, Qwen, PostGIS, SQLAlchemy,
+Alembic, FastAPI, Pydantic, uv, Ruff, Modal, CesiumJS, Three.js, and React Three Fiber. Listing a
+project records a dependency and gratitude; it does not imply endorsement or support.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0 - see [LICENSE](LICENSE).

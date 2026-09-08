@@ -100,6 +100,9 @@ class DeploymentContractTests(unittest.TestCase):
         cls.document_workflow = (
             ROOT / ".github" / "workflows" / "document.yml"
         ).read_text(encoding="utf-8")
+        cls.cloud_evaluation_workflow = (
+            ROOT / ".github" / "workflows" / "cloud-evaluation.yml"
+        ).read_text(encoding="utf-8")
         cls.config_source = (ROOT / "georeport3d" / "config.py").read_text(
             encoding="utf-8"
         )
@@ -109,6 +112,8 @@ class DeploymentContractTests(unittest.TestCase):
         required = (
             '"--revision",',
             '"--tokenizer-revision",',
+            '"--trust-remote-code",',
+            '"--disable-log-requests",',
             'secrets=[modal.Secret.from_name("huggingface-secret")]',
             'GPU = "L40S"',
             "MIN_CONTAINERS = 0",
@@ -220,9 +225,9 @@ class DeploymentContractTests(unittest.TestCase):
 
     def test_deployment_notes_give_exact_later_operator_commands(self) -> None:
         required = (
-            "uv sync --python 3.13 --extra dev --extra modal",
-            "uv run modal setup",
-            "uv run modal deploy --env main deployment/modal_worker.py",
+            "uv run --python 3.13 modal run --env evaluation",
+            "deployment/qwen_vision_probe.py --run-id <unique-run-id>",
+            "uv run --python 3.13 modal deploy --env main deployment/modal_worker.py",
             "APP_ENV=production",
             "INFERENCE_PROVIDER=modal",
             "MODAL_APP_NAME=georeport3d-qwen",
@@ -308,6 +313,7 @@ class DeploymentContractTests(unittest.TestCase):
             ("deploy", self.deploy_workflow),
             ("ci", self.ci_workflow),
             ("document", self.document_workflow),
+            ("cloud-evaluation", self.cloud_evaluation_workflow),
         ]:
             uses = [
                 (action, revision, tag)
@@ -322,6 +328,30 @@ class DeploymentContractTests(unittest.TestCase):
                 self.assertRegex(source, r"(?m)^  contents: read$")
                 self.assertEqual(len(uses), len(uses_lines))
                 self.assertEqual(set(uses), expected_uses)
+
+    def test_cloud_evaluation_is_manual_bounded_and_credential_minimal(self) -> None:
+        source = self.cloud_evaluation_workflow
+        self.assertEqual(_mapping_keys(source, "on", 0), ["workflow_dispatch"])
+        self.assertEqual(_mapping_keys(source, "inputs", 4), ["confirm"])
+        self.assertIn(
+            "if: github.ref == 'refs/heads/main' && inputs.confirm == 'evaluate'",
+            source,
+        )
+        self.assertIn("environment: modal-evaluation", source)
+        self.assertIn("timeout-minutes: 90", source)
+        self.assertIn("persist-credentials: false", source)
+        self.assertIn("concurrency:", source)
+        self.assertIn("cancel-in-progress: false", source)
+        self.assertIn('if [[ "${EVALUATION_CONFIRM}" != "evaluate" ]]; then', source)
+        self.assertIn('if [[ "${EVALUATION_REF}" != "refs/heads/main" ]]; then', source)
+        self.assertIn("deployment/qwen_vision_probe.py", source)
+        self.assertIn('--run-id "${BENCHMARK_RUN_ID}"', source)
+        self.assertNotIn("pull_request_target", source)
+        self.assertNotIn("HF_TOKEN", source)
+        self.assertEqual(
+            set(re.findall(r"\$\{\{\s*secrets\.([A-Z0-9_]+)\s*}}", source)),
+            {"MODAL_ID", "MODAL_ID_SECRET"},
+        )
 
     def test_runbook_and_readiness_name_the_real_operator_boundary(self) -> None:
         required = (
@@ -343,23 +373,23 @@ class DeploymentContractTests(unittest.TestCase):
     def test_deployment_notes_explain_deferred_and_paid_boundaries(self) -> None:
         notes = " ".join(self.deployment_notes.lower().split())
         required = (
-            "code-level",
-            "official modal sdk",
-            "unverified",
-            "approved network",
-            "outside the repository",
-            "never commit",
+            "code level",
+            "has not been deployed or evaluated in modal",
+            "restricted workstation",
+            "neither workflow is triggered by a pull request",
+            "github environment named `modal-evaluation`",
+            "repository-level `hf_token` is not consumed",
+            "georeport3d-benchmark-data",
+            "georeport3d-benchmark-results",
+            "provisional diagnostic",
+            "not field-level truth",
+            "raw answers",
+            "restricted results volume",
             "does not call `qwenworker.extract_batch`",
             "image-build",
-            "storage",
-            "network charges",
-            "inside modal",
-            "never onto this workstation",
-            "separate user authorization",
-            "`/budget`",
-            "cache miss",
-            "non-sensitive",
-            "no automatic fallback",
+            "separately authorized",
+            "api still lacks `/analyze`",
+            "no hardware fallback",
         )
         for statement in required:
             with self.subTest(statement=statement):
@@ -367,8 +397,9 @@ class DeploymentContractTests(unittest.TestCase):
 
     def test_root_readme_links_canonical_readiness_guidance(self) -> None:
         required = (
-            "[Modal deployment guide](deployment/README.md)",
-            "[pre-deployment readiness audit](docs/19_PRE_DEPLOYMENT_READINESS.md)",
+            "deployment/README.md",
+            "docs/19_PRE_DEPLOYMENT_READINESS.md",
+            "docs/20_DOCUMENT_EXTRACTION_BENCHMARK_READINESS.md",
         )
         for link in required:
             with self.subTest(link=link):

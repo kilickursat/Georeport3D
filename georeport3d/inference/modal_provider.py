@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from typing import Protocol, cast
@@ -13,6 +14,9 @@ from georeport3d.inference.base import (
     InferenceResult,
     InferenceUnavailableError,
 )
+
+
+MAX_RESPONSE_SCHEMA_CHARS = 100_000
 
 _FAILURE_MESSAGES = {
     "INVALID_REQUEST": "request was invalid",
@@ -31,6 +35,29 @@ class _Worker(Protocol):
 
 def _invalid_response() -> InferenceUnavailableError:
     return InferenceUnavailableError("Modal worker returned an invalid response")
+
+
+def _validated_response_schema(schema: object) -> dict[str, object]:
+    """Return an isolated JSON schema or reject it before any remote call."""
+    if not isinstance(schema, dict) or not schema or schema.get("type") != "object":
+        raise InferenceUnavailableError("Modal inference request schema is invalid")
+    try:
+        serialized = json.dumps(
+            schema,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_RESPONSE_SCHEMA_CHARS:
+            raise ValueError("schema is too large")
+        isolated = json.loads(serialized)
+    except (RecursionError, TypeError, ValueError):
+        raise InferenceUnavailableError(
+            "Modal inference request schema is invalid"
+        ) from None
+    if not isinstance(isolated, dict) or isolated != schema:
+        raise InferenceUnavailableError("Modal inference request schema is invalid")
+    return cast(dict[str, object], isolated)
 
 
 class ModalInferenceProvider:
@@ -83,6 +110,7 @@ class ModalInferenceProvider:
                 "model_revision": request.model_revision,
                 "prompt_version": request.prompt_version,
                 "preprocess_version": request.preprocess_version,
+                "response_schema": _validated_response_schema(request.response_schema),
             }
             for request in request_items
         ]

@@ -14,71 +14,53 @@ Three things are measured, in ascending order of what they cost to be wrong abou
      was taken on and never verified - and the first thing this probe overturned:
      the NVFP4 checkpoint it originally pointed at needs Blackwell, which is why
      `MODEL_ID` is now the FP8 build.
-  2. Whether the model reads the sheet. Scored on recall of tokens known to be on it,
-     reusing the ground truth already written for the OCR comparison, because
-     character count rewards a model for inventing text.
-  3. Which identifiers it reports. A model that returns plausible borehole numbers
-     that are not on the page is worse than one that returns nothing, because the
-     pipeline would cite them - but this run only *lists* what was read. Confirming
-     each against the sheet needs the page text, which lives in
-     `deployment/ocr_comparison.py`, so invention is not scored here.
+  2. Whether the model reads the sheet. This is diagnostic recall against provisional
+     hand-verified tokens, not field-level accuracy.
+  3. How many identifier-shaped values it reports. Raw values stay in Modal for later
+     human review; the caller receives a count and no document-derived text.
 
 This spends real money: an L40S at $0.000542/sec. One run loads the model once and
 reads a handful of sheets.
 
-    modal run deployment/qwen_vision_probe.py
+    modal run deployment/qwen_vision_probe.py --run-id <unique-run-id>
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from functools import cache
 from pathlib import Path
 
 import modal
 
 sys.path.insert(0, Path(__file__).parent.parent.as_posix())
 
+from georeport3d.evaluation.cloud import (  # noqa: E402
+    resolve_dataset,
+    validate_run_id,
+    verify_dataset_hash,
+    write_raw_cloud_result,
+)
+from georeport3d.evaluation.manifest import AnnotationStatus  # noqa: E402
+from georeport3d.evaluation.matching import (  # noqa: E402
+    extract_identifiers,
+    score_diagnostic_tokens,
+)
+from georeport3d.evaluation.provisional import (  # noqa: E402
+    DART_D2_PROVISIONAL_TOKENS,
+)
 from georeport3d.model_identity import MODEL_ID, MODEL_REVISION  # noqa: E402
 
 
-@cache
-def ground_truth() -> dict[int, tuple[str, ...]]:
-    """The tokens already verified present on each sheet.
+def provisional_tokens() -> dict[int, tuple[str, ...]]:
+    """Return the explicitly provisional token reference for this dataset."""
+    return DART_D2_PROVISIONAL_TOKENS
 
-    Loaded on first use rather than at module scope. Modal executes this same file
-    inside the container, where only the `document` and `georeport3d` sources are
-    shipped, so importing `deployment` up here fails there - and fails only after a
-    GPU has been allocated, which is the most expensive place there is to discover a
-    missing module. Scoring runs in the local entrypoint, so the import never has to
-    happen remotely at all.
-    """
-    from deployment.ocr_comparison import GROUND_TRUTH
-
-    return GROUND_TRUTH
-
-# Cheapest first, and Modal takes the first type with free capacity. A single-type
-# request queues against one pool: the first attempt sat unscheduled with no L40S
-# available and no way to see a queue position.
-#
-# A100-40GB was in this list and is not any more. The FP8 checkpoint is ~30.9 GB, which
-# leaves a 40 GiB card too little for a KV cache once the vision encoder is resident.
-# Every type left here holds the weights with real headroom - on L40S, around 14 GiB of
-# it.
-#
-# These are the GPUs vLLM's own recipe names for the FP8 build of this model, so no
-# kernel is being forced and no fallback path is in play. That is the point: the
-# NVFP4 checkpoint this probe first tried is W4A4 and needs Blackwell's FP4 tensor
-# cores, and Unsloth documents Marlin as severely degrading it on anything older.
-GPU = ["L40S", "A100-80GB", "H100"]
-# Published Modal rates, so the run can price itself against whichever type it landed
-# on rather than against the one that was asked for.
+# One exact profile keeps this benchmark comparable to the production worker. It
+# queues when L40S capacity is unavailable rather than silently changing hardware.
+GPU = "L40S"
 USD_PER_HOUR = {
     "L40S": 1.9512,
-    "A100-40GB": 2.1000,
-    "A100-80GB": 2.5000,
-    "H100": 3.9500,
 }
 TIMEOUT_SECONDS = 3600
 # The geologic map, a legend sheet, and three profiles. Enough to answer the question
@@ -89,11 +71,19 @@ MAX_OUTPUT_TOKENS = 1200
 # Where the cu13 wheels put their shared libraries inside the image.
 _CU13_LIB = "/usr/local/lib/python3.13/site-packages/nvidia/cu13/lib"
 
-REPORT = Path(__file__).parent.parent / "cbd2_20per_geotechnicalbaselinereport.pdf"
-REMOTE_REPORT = "/data/report.pdf"
+ROOT = Path(__file__).parent.parent
+MANIFEST = ROOT / "config" / "evaluation_datasets.yaml"
+REMOTE_MANIFEST = "/opt/georeport3d/evaluation_datasets.yaml"
+DEFAULT_DATASET_ID = "dart-d2-cbd2-gbr-v1"
 
 app = modal.App("georeport3d-qwen-vision-probe")
 hf_cache = modal.Volume.from_name("georeport3d-hf-cache", create_if_missing=True)
+benchmark_data = modal.Volume.from_name(
+    "georeport3d-benchmark-data", create_if_missing=False
+)
+benchmark_results = modal.Volume.from_name(
+    "georeport3d-benchmark-results", create_if_missing=False
+)
 hf_secret = modal.Secret.from_name("huggingface-secret")
 
 image = (
@@ -107,6 +97,7 @@ image = (
         "nvidia-cutlass-dsl==4.5.2",
         "pypdfium2>=4,<6",
         "pillow>=10,<13",
+        "pyyaml==6.0.3",
     )
     .env(
         {
@@ -126,7 +117,7 @@ image = (
         }
     )
     .add_local_python_source("document", "georeport3d")
-    .add_local_file(REPORT.as_posix(), REMOTE_REPORT)
+    .add_local_file(MANIFEST.as_posix(), REMOTE_MANIFEST)
 )
 
 # What the model is asked for. Deliberately not free-form: the pipeline's whole
@@ -151,7 +142,11 @@ Answer as a plain list, one item per line."""
 @app.function(
     image=image,
     gpu=GPU,
-    volumes={"/cache": hf_cache},
+    volumes={
+        "/cache": hf_cache,
+        "/benchmarks": benchmark_data.with_mount_options(read_only=True),
+        "/results": benchmark_results,
+    },
     secrets=[hf_secret],
     timeout=TIMEOUT_SECONDS,
     # A failure here is a bug in this file, not a flaky machine, so retrying it just
@@ -159,8 +154,8 @@ Answer as a plain list, one item per line."""
     # error retried on paid containers before it could be stopped by hand.
     retries=0,
 )
-def read_sheets() -> dict:
-    """Load the model once, then read each sheet."""
+def read_sheets(run_id: str, dataset_id: str) -> dict:
+    """Load once, score in Modal, retain raw output in the results Volume."""
     import base64
     import os
     import time
@@ -170,12 +165,21 @@ def read_sheets() -> dict:
 
     from document.render import DEFAULT_DPI, render_region
 
+    safe_run_id = validate_run_id(run_id)
+    case, report = resolve_dataset(Path(REMOTE_MANIFEST), dataset_id)
+    if case.annotation_status is not AnnotationStatus.PROVISIONAL_TOKENS:
+        raise RuntimeError("dataset is not eligible for provisional token scoring")
+    selected_pages = tuple(page for page in PAGES if page in case.page_selection)
+    if selected_pages != PAGES:
+        raise RuntimeError("dataset does not allow the configured probe pages")
+    verify_dataset_hash(report, case.sha256)
+
     print(f"hf auth: {'yes' if os.environ.get('HF_TOKEN') else 'NO'}", flush=True)
 
     rendered: dict[int, str] = {}
     sizes: dict[int, tuple[int, int]] = {}
-    for page in PAGES:
-        image_data = render_region(Path(REMOTE_REPORT), page, dpi=DEFAULT_DPI)
+    for page in selected_pages:
+        image_data = render_region(report, page, dpi=DEFAULT_DPI)
         rendered[page] = base64.b64encode(image_data.png).decode("ascii")
         sizes[page] = (image_data.width, image_data.height)
         print(f"rendered p{page}: {image_data.width}x{image_data.height}", flush=True)
@@ -206,8 +210,7 @@ def read_sheets() -> dict:
         "free_after_load_gib": round(free / 1024**3, 2),
         "used_gib": round((total - free) / 1024**3, 2),
     }
-    # Which type actually ran, since the request names several. Reported by the driver
-    # rather than assumed, so the price below is the price of the hardware used.
+    # Retain the driver identity as evidence that Modal allocated the requested L40S.
     device = torch.cuda.get_device_name(0)
     capability = ".".join(str(part) for part in torch.cuda.get_device_capability(0))
     print(f"device: {device} (sm{capability})   memory: {memory}", flush=True)
@@ -235,15 +238,22 @@ def read_sheets() -> dict:
                     }
                 ],
                 sampling_params=sampling,
+                chat_template_kwargs={"enable_thinking": False},
             )
             answers[page] = outputs[0].outputs[0].text
         except Exception as error:  # noqa: BLE001 - one bad page must not lose the rest
             answers[page] = ""
-            print(f"p{page}: FAILED {type(error).__name__}: {error}", flush=True)
+            print(f"p{page}: FAILED {type(error).__name__}", flush=True)
         durations[page] = time.monotonic() - call_started
         print(f"p{page}: {len(answers[page])} chars in {durations[page]:.1f}s", flush=True)
 
-    return {
+    rows = [score(page, answers.get(page, "")) for page in selected_pages]
+    raw_result = {
+        "run_id": safe_run_id,
+        "dataset_id": case.dataset_id,
+        "annotation_status": case.annotation_status.value,
+        "model_id": MODEL_ID,
+        "model_revision": MODEL_REVISION,
         "startup_seconds": round(startup_seconds, 1),
         "device": device,
         "compute_capability": capability,
@@ -251,6 +261,42 @@ def read_sheets() -> dict:
         "sizes": {str(k): v for k, v in sizes.items()},
         "answers": {str(k): v for k, v in answers.items()},
         "durations": {str(k): round(v, 1) for k, v in durations.items()},
+        "rows": rows,
+    }
+    write_raw_cloud_result(safe_run_id, "qwen_vision.json", raw_result)
+    benchmark_results.commit()
+
+    expected_total = sum(row["expected"] for row in rows)
+    found_total = sum(row["found"] for row in rows)
+    inference_seconds = round(sum(durations.values()), 1)
+    billed_seconds = startup_seconds + sum(durations.values())
+    return {
+        "run_id": safe_run_id,
+        "dataset_id": case.dataset_id,
+        "annotation_status": case.annotation_status.value,
+        "metric": "diagnostic_token_recall",
+        "complete": all(bool(answers.get(page)) for page in selected_pages),
+        "pages_requested": len(selected_pages),
+        "pages_completed": sum(bool(answers.get(page)) for page in selected_pages),
+        "expected_tokens": expected_total,
+        "found_tokens": found_total,
+        "diagnostic_recall": (
+            round(found_total / expected_total, 6) if expected_total else None
+        ),
+        "identifiers_emitted_count": sum(
+            len(row["identifiers_emitted"]) for row in rows
+        ),
+        "declared_unreadable_pages": sum(
+            bool(row["declared_unreadable"]) for row in rows
+        ),
+        "startup_seconds": round(startup_seconds, 1),
+        "inference_seconds": inference_seconds,
+        "gpu_profile": GPU,
+        "device": device,
+        "compute_capability": capability,
+        "memory": memory,
+        "estimated_cost_usd": round(billed_seconds * USD_PER_HOUR[GPU] / 3600, 4),
+        "raw_artifact_written": True,
     }
 
 
@@ -406,72 +452,40 @@ def score(page: int, text: str) -> dict:
     of an error, and a reader takes it at face value. `deployment/ocr_comparison.py`
     holds the page text that answers the real question.
     """
-    import re
-
-    from document.terms import normalize
-
-    haystack = normalize(text)
-    expected = ground_truth().get(page, ())
-    found = [token for token in expected if normalize(token) in haystack]
+    expected = provisional_tokens().get(page, ())
+    diagnostic = score_diagnostic_tokens(
+        expected,
+        text,
+        annotation_status=AnnotationStatus.PROVISIONAL_TOKENS,
+    )
 
     # Identifier-shaped strings the model emitted, e.g. B-3, T-201, TS-104. Reported
     # for a reviewer to check against the page, not scored here.
-    emitted = {match.group(0).upper() for match in re.finditer(r"\b[A-Z]{1,3}-\d{1,4}\b", text)}
+    emitted = extract_identifiers(
+        text,
+        prefixes=("B", "BH", "CBD", "DH", "P", "T", "TP", "TS"),
+    )
     return {
         "page": page,
         "chars": len(text),
-        "expected": len(expected),
-        "found": len(found),
-        "recall": round(len(found) / len(expected), 3) if expected else None,
-        "missed": [token for token in expected if token not in found],
-        "identifiers_emitted": sorted(emitted),
+        **diagnostic.model_dump(mode="json"),
+        "identifiers_emitted": list(emitted),
         "declared_unreadable": "UNREADABLE" in text.upper(),
     }
 
 
 @app.local_entrypoint()
-def main() -> None:
-    result = read_sheets.remote()
-    rows = [score(page, result["answers"].get(str(page), "")) for page in PAGES]
+def main(run_id: str, dataset_id: str = DEFAULT_DATASET_ID) -> None:
+    """Run manually and print only the sanitized cloud-produced summary."""
+    safe_run_id = validate_run_id(run_id)
+    case, _path = resolve_dataset(MANIFEST, dataset_id)
+    if case.annotation_status is not AnnotationStatus.PROVISIONAL_TOKENS:
+        raise SystemExit("this probe requires a provisional_tokens dataset")
 
-    Path("qwen_vision_probe_result.json").write_text(
-        json.dumps({"run": result, "rows": rows}, indent=2, default=str)
-    )
-
-    # Priced from the device the driver reported, matched against the rate table by
-    # substring because Modal's type names and the driver's product names differ
-    # ("H100" vs "NVIDIA H100 80GB HBM3"). An unmatched device prices at nothing and
-    # says so, rather than quietly reporting a cost that is not the one incurred.
-    device = str(result.get("device", ""))
-    rate = next((usd for name, usd in USD_PER_HOUR.items() if name.split("-")[0] in device), None)
-    billed = result["startup_seconds"] + sum(result["durations"].values())
-
-    print()
-    print("=" * 74)
-    print(f"device  {device} (sm{result.get('compute_capability', '?')})")
-    print(f"startup {result['startup_seconds']}s   memory {result['memory']}")
-    if rate is None:
-        print(f"gpu time {billed:.0f}s   cost UNKNOWN (no rate for {device!r})")
-    else:
-        print(f"gpu time {billed:.0f}s   cost ~${billed * rate / 3600:.2f} at ${rate}/hr")
-    print("-" * 74)
-    print(f"{'page':<7}{'recall':>10}{'chars':>9}{'secs':>8}   {'unread':>7}  identifiers read")
-    found_total = expected_total = 0
-    for row in rows:
-        found_total += row["found"]
-        expected_total += row["expected"]
-        print(
-            f"{row['page']:<7}{row['found']}/{row['expected']:<8}{row['chars']:>9}"
-            f"{result['durations'].get(str(row['page']), 0):>8}"
-            f"   {str(row['declared_unreadable']):>7}"
-            f"  {row['identifiers_emitted']}"
+    summary = read_sheets.remote(safe_run_id, case.dataset_id)
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    print("Diagnostic token recall is not field precision, field recall, or a release gate.")
+    if not bool(summary.get("complete")):
+        raise SystemExit(
+            "cloud inference was incomplete; inspect the private results artifact"
         )
-    print("-" * 74)
-    share = found_total / max(expected_total, 1)
-    print(f"TOTAL recall {found_total}/{expected_total} = {share:.1%}")
-    print("Identifiers are listed, not scored: whether one is on the page is a")
-    print("question for the page text, which this run does not have.")
-    print("=" * 74)
-    for row in rows:
-        if row["missed"]:
-            print(f"  p{row['page']} missed: {row['missed']}")

@@ -19,6 +19,7 @@ cache:
     - model_revision
     - prompt_version
     - preprocess_version
+    - extraction_contract_version
 
 modal:
   gpu: L40S

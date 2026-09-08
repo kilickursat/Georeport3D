@@ -13,6 +13,7 @@ CANONICAL_CACHE_KEY_FIELDS = [
     "model_revision",
     "prompt_version",
     "preprocess_version",
+    "extraction_contract_version",
 ]
 
 
@@ -139,6 +140,7 @@ def test_policy_rejects_non_phase_zero_modal_scaling(
                 "model_id",
                 "prompt_version",
                 "preprocess_version",
+                "extraction_contract_version",
             ],
             id="missing-model-revision",
         ),
@@ -151,6 +153,7 @@ def test_policy_rejects_non_phase_zero_modal_scaling(
                 "model_revision",
                 "prompt_version",
                 "preprocess_version",
+                "extraction_contract_version",
             ],
             id="duplicate-model-revision",
         ),
@@ -162,6 +165,7 @@ def test_policy_rejects_non_phase_zero_modal_scaling(
                 "model_revision",
                 "prompt_version",
                 "preprocess_version",
+                "extraction_contract_version",
                 "unknown_field",
             ],
             id="unknown-field",
@@ -174,6 +178,7 @@ def test_policy_rejects_non_phase_zero_modal_scaling(
                 "model_revision",
                 "prompt_version",
                 "preprocess_version",
+                "extraction_contract_version",
             ],
             id="reordered-fields",
         ),
