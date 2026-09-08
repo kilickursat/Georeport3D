@@ -1,0 +1,66 @@
+name: Cloud document evaluation (Modal)
+
+# Manual only. Pull requests must never receive Modal credentials or allocate a GPU.
+# A maintainer may enable a separate post-merge trigger only after the evaluation
+# environment, dataset retention, and Modal budget have been reviewed.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "evaluate" to run the paid cloud benchmark.'
+        required: true
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: modal-document-evaluation
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: sanitized benchmark summary
+    if: github.ref == 'refs/heads/main' && inputs.confirm == 'evaluate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: modal-evaluation
+    env:
+      MODAL_ENVIRONMENT: evaluation
+      UV_VERSION: "0.11.33"
+    steps:
+      - name: Require explicit paid-run confirmation
+        env:
+          EVALUATION_CONFIRM: ${{ inputs.confirm }}
+          EVALUATION_REF: ${{ github.ref }}
+        run: |
+          if [[ "${EVALUATION_CONFIRM}" != "evaluate" ]]; then
+            echo "::error::Confirmation must be exactly 'evaluate'."
+            exit 1
+          fi
+          if [[ "${EVALUATION_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Cloud evaluation is restricted to main."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Sync the locked Modal client only
+        run: uv sync --frozen --python 3.13 --extra modal
+
+      - name: Run against the pre-provisioned read-only cloud dataset
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_ID_SECRET }}
+          BENCHMARK_RUN_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: >-
+          uv run --python 3.13 modal run --env evaluation
+          deployment/qwen_vision_probe.py
+          --run-id "${BENCHMARK_RUN_ID}"

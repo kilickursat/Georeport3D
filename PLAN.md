@@ -1,236 +1,138 @@
-# Plan
+# GeoReport3D implementation plan
 
-Scope: first deployable slice of the GeoReport3D vertical slice
-(`docs/16_MVP_VERTICAL_SLICE.md`), clearing the code-level gates in
-`docs/19_PRE_DEPLOYMENT_READINESS.md`. Deployment target is Modal serverless GPU.
-No AWS services are used. Each step is one reviewable PR to
-`github.com/kilickursat/Georeport3D`.
+Updated: 2026-09-08
 
-Hugging Face is the source of the public `unsloth/Qwen3.6-27B-NVFP4` checkpoint
-(public, ungated, revision `ccdaab7e68af2409599b8949a8f2685703c9bae5`). No model
-of our own is published there.
+GeoReport3D is a pre-release backend foundation, not a deployed application. The deployment target
+is Modal serverless GPU using the pinned public model `Qwen/Qwen3.6-27B-FP8` on L40S. Model and
+document workloads stay in Modal; pull-request CI and developer workstations remain GPU-free.
 
-## Phase 0 — Prove the gates and automate them
+The current application implements upload, project creation/upload, document inventory, workload
+estimate, budget status, and job status. The durable `JobController` implements cache-first,
+budget-authorized ordering through inference, validation, and persistence, but no `/analyze` route
+or versioned prompt/render assembler calls it yet.
 
-1. ✅ **Lock and green the build** — Generated `uv.lock`, ran the gates the readiness
-   register listed as deferred, fixed the failures, and corrected the stale offline status
-   in `README.md`.
-   - Output: `uv.lock` (166 packages, Python 3.13.14)
-   - Ruff: 24 findings → 0. 19 auto-fixed; `File()` defaults and a deliberate `sys.path`
-     insert are now configured exceptions in `pyproject.toml`.
-   - Pytest: 2 failed → 184 passed, 1 skipped (PostGIS integration, opt-in).
-   - Build and API import passed unchanged.
-   - Follow-up for step 8: an upload with no multipart filename parameter returns FastAPI's
-     raw 422 validation body instead of a stable error code.
-2. ✅ **CI workflow** — `.github/workflows/ci.yml` enforces the section A gates on every
-   pull request.
-   - Output: `.github/workflows/ci.yml`
-   - `gates` job green on Python 3.12 and 3.13: lock currency, frozen sync, Ruff,
-     184 passed, build, API import.
-   - `postgis` job green: `1 passed, 184 deselected` against `postgis/postgis:17-3.5`.
-     This is the first execution of `alembic upgrade head` against a real database —
-     PostGIS responded and all ten expected tables were created. Partial evidence for
-     S-02 and C-18; repositories and transaction boundaries remain outstanding in step 6.
-   - CI is GPU-free by construction: `INFERENCE_PROVIDER=mock`, no Modal credential.
-3. ✅ **Make the worker configurable and pinned** — `huggingface-secret` is attached to
-   `@app.cls`, `MODEL_ID` and `MODEL_REVISION` are baked into `image.env()` so they reach
-   the container, and vLLM receives `--revision` so a container cannot drift to a newer
-   upload of the same repository.
-   - Output: `deployment/modal_worker.py`, `deployment/README.md`
-   - Contract tests extended in `tests/modal/test_deployment_contract.py`; the
-     `_vllm_command` assertion in `tests/modal/test_worker.py` was updated deliberately,
-     since pinning changes that contract.
-   - Closed by step 14 and locked by `tests/inference/test_revision_contract.py`.
-     `Settings.model_revision` now defaults to the pinned commit rather than `None`, so
-     the CPU side no longer derives cache keys from a value naming no model. The worker
-     reports its own source-controlled constant and refuses a request for any other
-     revision; the provider refuses a result whose metadata claims a different identity
-     than was authorized. All three had to agree, because `model_revision` is one of the
-     six fields the cache key is built from.
-4. ✅ **Deploy workflow** — `.github/workflows/deploy.yml`, `workflow_dispatch` only,
-   behind the `modal-production` environment, which requires a reviewer and permits
-   protected branches only.
-   - Output: `.github/workflows/deploy.yml`
-   - Reads `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. `HF_TOKEN` is deliberately not
-     passed: weights are fetched inside the Modal container using the attached
-     `huggingface-secret`, never on a runner, so a repository secret would do nothing.
-   - Requires typing `deploy` to confirm, and rejects a moving ref for `model_revision`.
-   - Never `pull_request`-triggered. The repository is public, so a fork must not be able
-     to reach the Modal budget.
-   - Running it is still an unexecuted, user-authorized action; step 14 is where it is
-     first invoked.
+Legend: `[x]` implemented at code level, `[ ]` not complete. A checked cloud-related item does not
+mean it has been executed in Modal unless the item explicitly says so.
 
-## Phase 1 — Complete the backend slice
+## Phase 0: repository and backend foundation
 
-5. ✅ **Document inventory** — The empty `document/` package (C-16) now carries the
-   parse contract, a lazily imported Docling adapter, deterministic figure
-   classification, and a provenance-carrying inventory.
-   - Output: `document/base.py`, `document/classify.py`, `document/docling_adapter.py`,
-     `document/inventory.py`, `.github/workflows/document.yml`
-   - 49 new tests; suite is 233 passed, 1 skipped. Docling is not imported at module
-     load, so the API process and the normal CI gates stay free of it.
-   - Two defects the fakes could not have caught, both found by running the real
-     backend: DOCX reports no pagination at all, which silently produced an empty
-     inventory; and a bounding box with no page height cannot be converted from a
-     bottom-left origin, which would have placed "show source" on the wrong region.
-   - `document*` was missing from the packaging include list, so the package would
-     have been absent from the built wheel.
-   - Follow-up: the inventory is not yet wired to any route. Step 8 consumes it.
-6. ✅ **PostGIS repositories** — Documents, observations, evidence links, jobs, usage,
-   and cache records can now be read and written (C-18). `database/schema.sql` is
-   regenerated from revision `20260827_0001` behind a non-authoritative banner (S-01).
-   - Output: `georeport3d/db/session.py`, `georeport3d/db/repositories.py`,
-     `tests/db/conftest.py`, `tests/db/test_repositories.py`, `database/schema.sql`
-   - 11 new tests, green against real PostGIS in CI: `12 passed, 1 skipped,
-     231 deselected` in the `postgis` job.
-   - Repositories never commit; `unit_of_work` owns the transaction, so a cache
-     entry, usage record, and job transition commit together or not at all.
-   - Enforced in the repository rather than trusted to callers: evidence must belong
-     to the document being persisted; geometry is written only with an explicit SRID,
-     never one derived from CRS text; a repeated idempotency key returns the existing
-     job with its original reservation.
-   - Follow-up: the borehole geometry column stays null until an SRID can be resolved
-     deterministically from the document, which is step 10.
-7. ✅ **Durable cache and job controller** — Budget admission and the result cache are
-   now durable, and the ordered pipeline is enforced by a state machine (C-10, C-11).
-   - Output: `georeport3d/services/job_state.py`, `georeport3d/services/controller.py`,
-     `BudgetRepository` in `georeport3d/db/repositories.py`,
-     `tests/services/test_job_state.py`, `tests/db/test_controller.py`
-   - 22 new tests. `postgis` job green at `23 passed, 1 skipped, 243 deselected`.
-   - The ledger keeps its role as the GPU rate calculator; it is no longer the
-     accountant. Spend and reservations previously lived in process memory, so a
-     restart reset recorded spend to zero and freed the whole budget again.
-   - Ordering is structural: `GPU_RUNNING` is unreachable except through
-     `CACHE_LOOKUP` and `GPU_AUTHORIZED`, so no caller can shortcut to spending. A
-     cache hit settles without authorising a GPU, proven with a provider that fails
-     if called. A refused job holds no reservation.
-   - A result failing schema validation is never cached and never returned. A failed
-     attempt still records its spend, since a GPU that ran consumed time.
-   - Fixed: `InferenceJobRepository.create` defaulted to `PENDING`, a state absent
-     from `docs/10` and unenforced by the column, so jobs were created in a state the
-     machine cannot advance out of.
-   - Follow-up: not wired to any route yet (step 8). The `model_revision` follow-up
-     from step 3 is closed.
-8. ⬜ **Job and extraction endpoints** — Implement the inventory, estimate, analyze,
-   status, cancel, extraction, borehole, section, and page routes from
-   `docs/10_API_AND_JOB_STATE.md` (C-13) with idempotency keys, timeouts, and stable
-   error codes. Wires the provider on `app.state` that no route currently calls (C-12).
-9. ⬜ **Versioned prompt assembly** — Connect `ai/prompts/` to a versioned task builder
-   with schemas, image/text boundaries, token limits, and prompt-injection tests (C-15).
-10. ⬜ **Observed borehole geometry** — Fill the empty `geology/` package (C-17) with
-    deterministic CRS transforms and borehole geometry for observed data only.
+- [x] Lock Python dependencies and enforce GPU-free Ruff, test, build, and API-import gates in
+  GitHub Actions on Python 3.12 and 3.13.
+- [x] Verify the Alembic baseline against a real PostGIS service in opt-in CI and implement durable
+  repositories with unit-of-work transaction ownership.
+- [x] Implement bounded streaming uploads, project/document records, SHA-256 identity, canonical
+  PDF/DOCX suffixes, and development filesystem storage.
+- [x] Implement domain models, evidence checks, depth rules, durable budget accounting, cache
+  identity, and the job state machine.
+- [x] Implement `JobController` ordering: cache lookup, estimate, confirmation, reservation,
+  inference, metadata/schema/domain/provenance validation, persistence, and settlement.
+- [x] Implement API routes for budget, upload, projects, project document upload, inventory,
+  estimate, and job status.
+- [x] Add the manual `modal-production` deployment workflow. It remains unexecuted for this
+  revision and never runs on pull requests.
 
-## Phase 2 — The web app
+## Phase 1: cloud document extraction harness
 
-11. ⬜ **Next.js scaffold** — Create the actual app under `apps/web/` (C-19) with a
-    lockfile; add type-check, lint, unit tests, and production build to CI.
-12. ⬜ **Upload, evidence, and 3D viewer** — Upload → job status → evidence UI, with
-    CesiumJS for geospatial context and Three.js/R3F for borehole geometry sharing one
-    tested display-coordinate pipeline (C-20). Evidence panel visibly distinguishes
-    observed, inferred, and unknown.
+### Completed in source
 
-## Phase 3 — Deploy
+- [x] Add a metadata-only dataset manifest with allow-listed cloud paths, exact SHA-256 values,
+  source format, page selection, and annotation maturity (`unannotated`, `provisional_tokens`, or
+  `field_gold`).
+- [x] Label the existing DART case `provisional_tokens`. Historic `29/30` token recall is a narrow
+  diagnostic, not structured extraction accuracy; historic `10/18` identifier confirmation is
+  invalid because it used substring matching.
+- [x] Replace substring identifier checks with boundary-safe canonical exact matching and gate
+  field precision/recall/F1 on human-reviewed `field_gold` only.
+- [x] Remove the DART source PDF and raw benchmark result JSON files from the current tracked tree.
+  Their older Git objects are not erased by a normal commit; history remediation is a separate
+  maintainer decision.
+- [x] Move benchmark input/output contracts to Modal Volumes: read-only
+  `georeport3d-benchmark-data` and restricted `georeport3d-benchmark-results`. Local entrypoints do
+  not upload reports, receive raw answers, or write raw result files.
+- [x] Add fail-closed dataset/run-ID validation, pre-read hash verification, non-overwriting cloud
+  result paths, and sanitized summaries.
+- [x] Add the protected, serialized, `workflow_dispatch`-only `modal-evaluation` workflow. Pull
+  requests receive no Modal/Hugging Face credentials and cannot allocate a GPU.
+- [x] Align the production worker with the successful FP8/L40S startup profile: CUDA 13 library
+  path, 32,768-token context, 16 sequences, one image per prompt, and no hardware fallback.
+- [x] Require a Pydantic response schema through controller, provider, and worker; use vLLM JSON
+  Schema structured output and disable Qwen thinking mode.
+- [x] Validate document provenance across boreholes, intervals, contacts, and sections.
+- [x] Document fake, stale, provisional, code-level, and blocked deployment claims in
+  `docs/20_DOCUMENT_EXTRACTION_BENCHMARK_READINESS.md` and the approved cloud harness design.
 
-13. ✅ **GPU-free end-to-end test** — Both cost guarantees are demonstrated against a
-    real database in `tests/db/test_gpu_free_end_to_end.py`.
-    - The provider under test is a genuine `ModalInferenceProvider` whose resolver
-      raises. The resolver is the last CPU-side step before Modal is contacted, so the
-      claim proved is that nothing reaches the boundary — not merely that a Python
-      method went uncalled, which a fake provider would have shown.
-    - Upload → inventory drives the real routes and routes a region, at zero attempts.
-    - A cache hit settles `COMPLETED` at exactly `Decimal(0)` without the boundary, and
-      still does so under a budget too small to admit any miss, which is what makes
-      cache-first ordering a cost guarantee rather than an optimisation.
-    - A deliberate miss asserts the boundary *is* reached, so the other three tests
-      cannot pass by the controller having quietly stopped calling the provider.
-14. ⬜ **Modal deploy, no inference** — From CI with explicit approval: build the image,
-    pull the pinned checkpoint into the Modal volume, register the vLLM class, capture
-    SDK version, app identity, and rollback identifier.
-15. ⬜ **One authorized smoke inference** — After a persistent-budget check and confirmed
-    cache miss, run a single paid inference on a non-confidential fixture. Record
-    latency, GPU memory, cost, result envelope, and log-redaction evidence.
-16. ⬜ **Vertical slice and evidence update** — Run upload → inventory → analysis →
-    validation → PostGIS → 3D view on one permitted real report, then update
-    `docs/19_PRE_DEPLOYMENT_READINESS.md` and `docs/15_DEVELOPER_CHECKLIST.md` from
-    retained evidence only.
+### Cloud work deliberately deferred
 
-## Constraints this scope carries
+- [ ] Verify or provision the expected DART object at
+  `/benchmarks/dart-d2/cbd2_20per_geotechnicalbaselinereport.pdf` in Modal environment
+  `evaluation`, with the SHA-256 recorded in `config/evaluation_datasets.yaml`.
+- [ ] Verify restricted retention/access for the results Volume and required reviewers/budget for
+  the GitHub `modal-evaluation` environment.
+- [ ] Run one explicitly approved manual evaluation and retain only sanitized CI evidence. No run
+  was triggered while implementing the harness.
+- [ ] Build a representative, human-reviewed `field_gold` corpus covering born-digital and scanned
+  PDFs, DOCX, tables, borehole logs, drawings, rotations, page sizes, and languages.
+- [ ] Define release thresholds only after the field-gold corpus and annotation review process
+  exist.
 
-- **No public exposure.** This scope defers authentication, ownership checks, CORS/CSRF,
-  and rate limiting. The register is explicit that C-22 blocks public deployment. Steps
-  14–16 produce a working private deployment; public exposure needs a follow-up plan.
-- **Steps 14–16 spend real money** against the `$230` cap, including build and storage
-  charges before any inference. Each requires explicit authorization at the time.
-- **Step 1 may reshuffle Phase 1.** The full test suite has never been run. Real
-  breakage gets reported before feature work begins, not folded in silently.
+## Phase 2: complete the backend vertical slice
 
-## Document backend: risks measured against a real report
+- [ ] Build versioned prompt/task assembly from canonical Docling JSON, preserving hierarchy,
+  tables, reading order, item references, render digests, and evidence coordinates.
+- [ ] Implement `/analyze` so the API passes bounded text/images and the exact
+  `GeotechnicalExtraction` schema through `JobController` to the configured provider.
+- [ ] Implement cancel, extraction, borehole, section, and page/evidence routes with ownership,
+  idempotency, timeouts, and stable error codes.
+- [ ] Replace development filesystem persistence with approved production object storage,
+  retention, encryption, and access policy.
+- [ ] Implement a Modal-only deterministic DOCX fixed-layout derivative with converter/version/hash
+  provenance. Until then, DOCX visual/page evidence remains unsupported; synthetic ordinals are
+  not printed pages.
+- [ ] Implement observed-only CRS transforms and borehole/interval geometry. Never infer a CRS or
+  coordinate that is absent from source evidence.
+- [ ] Add authentication, authorization, tenant ownership, rate limiting, CORS/CSRF policy, and
+  confidential-document lifecycle controls before any public exposure.
 
-Both risks below were opened against a synthetic fixture and have now been measured on
-a real 105-page geotechnical baseline report (DART D2, 20% design) using
-`deployment/docling_bench.py` on Modal — three parses per run, fresh converter each
-time. The report is third-party and gitignored, so these findings are the retained
-evidence, not the document.
+## Phase 3: web mapping and engineering rendering
 
-- **✅ Closed — layout detection is reproducible on real documents.** Three runs
-  produced zero structural differences: identical page count, per-page text hashes,
-  region counts, bounding boxes, and captions. The nondeterminism seen earlier was an
-  artefact of the synthetic fixture — bare text lines are out of distribution for a
-  layout model trained on real reports. Determinism also held with the OCR recovery
-  pass active. The cache key in `georeport3d/services/cache.py` may therefore keep
-  assuming that a given document and preprocess version yield the same parse; the parse
-  output does not need to be content-hashed into the key.
-- **⚠️ Confirmed and mitigated, not eliminated — text was silently dropped.** The risk
-  was real and worse than described. Twenty-one pages returned under 100 characters
-  against a document median of 2,584, and the ten worst were the report's primary
-  geological source: the geologic map (p80) and the nine general geologic profile sheets
-  (p83–91) returned 3–88 characters and **zero regions**. The pipeline was blind to the
-  subsurface interpretation, with no bounding box for any citation to point at, and
-  reported no error while doing it.
+- [ ] Create `apps/web` with Next.js/React and its own lock, type-check, lint, tests, and production
+  build gates. No frontend source exists today.
+- [ ] Use CesiumJS and 3D Tiles for geospatial context, terrain, camera behavior, and large spatial
+  datasets.
+- [ ] Use Three.js through React Three Fiber for engineering geometry: boreholes, intervals,
+  contacts, sections, and uncertainty overlays.
+- [ ] Share one tested coordinate/display transform between Cesium and Three.js and provide an
+  evidence panel that distinguishes observed, inferred, unknown, and review-required values.
 
-  Mitigated in `document/` v2 by three changes, each verified on the same report:
-  structural sparse-page triage (`SPARSE_TEXT_CHARS`, absolute rather than relative,
-  because a relative threshold flags nothing on a fully scanned document), an adaptive
-  second OCR pass over only the sparse pages, and a whole-page fallback region so a
-  sheet the layout model saw nothing on is still citable. Pages under 100 characters
-  fell from 21 to 3, and all three remaining are genuine section dividers. The drawing
-  sheets went from 3–88 characters and no region to 1,287–1,872 characters with one
-  region each. Cost: 2.9× parse time.
+## Phase 4: separately authorized cloud proof and release
 
-  It is mitigated rather than closed because the fallback is a whole page, not a located
-  region, so a citation against one is coarser than a citation against a detected figure.
-  `ParsedFigure.origin` records which kind a region is precisely so this stays visible
-  downstream rather than being averaged away.
+- [ ] Deploy the reviewed production worker from `main` through the protected
+  `modal-production` workflow. Deployment remains separate from document evaluation.
+- [ ] Capture redacted proof for exact L40S allocation, pinned model/revision, image build, vLLM
+  readiness, memory fit, response-schema behavior, zero retries, maximum two containers, cost,
+  and observed scale-to-zero.
+- [ ] Run one bounded, explicitly authorized smoke inference after durable budget and cache-miss
+  checks. Do not return source content, prompts, page images, or raw output as CI evidence.
+- [ ] Run the private upload -> inventory -> analyze -> validation -> PostGIS -> evidence -> 3D
+  vertical slice only after the missing backend and web steps are complete.
+- [ ] Update readiness records from retained evidence, then perform a separate security/privacy
+  review before considering public access.
 
-- **⚠️ New — page text cannot identify a region.** Not previously on this list, and only
-  visible against a real document. v1 assigned a geological identity whenever a
-  vocabulary term appeared anywhere in a page's text. On this report that produced
-  nineteen `borehole_log` regions of which **nineteen were wrong**: every one sat on a
-  page of body prose that merely discussed boring logs, and not one was a borehole log.
-  In reports of this genre the phrase appears on dozens of narrative pages.
+## Current technical decisions
 
-  Fixed in v2 (`PREPROCESS_VERSION` bumped, since it is part of the cache key):
-  identification comes only from a region's own caption; page text can corroborate a
-  caption but no longer name a region alone, and is retained as an auditable `hint` when
-  it stands alone. False `borehole_log` routings went 19 → 0, and `map` went from 5 (one
-  correct) to 1 (the correct one). The single exception is a whole-page fallback region,
-  where the page *is* the region and its text is the sheet's own title block.
-
-- **⚠️ Open — the vocabulary is a fallback, not the mechanism.** `document/terms.py`
-  now normalizes Unicode, folds regional and morphological variants, and carries terms
-  in five languages, which is what made the US spellings on this report ("geologic",
-  "boring log", "profile") match at all when the v1 UK-only vocabulary missed every one.
-  But no term table generalizes to every house style, language, and drafting convention
-  in this genre. The mechanism that does generalize is structural and language-free:
-  sparse text plus no detected regions implies a drawing sheet, which routes to the
-  vision model. The vocabulary should stay a cheap prefilter and a source of audit
-  hints, and must not become the thing accuracy depends on.
-
-- **⚠️ Open, pending step 14 — whether OCR should be on by default.** The recovery pass
-  is what makes those ten sheets readable today, and it costs 2.9× parse time. But
-  `unsloth/Qwen3.6-27B-NVFP4` is a vision-language model, so it can read a rendered
-  sheet directly, with spatial layout intact and without OCR's second error stage —
-  which on this report already showed transcription damage (a dropped apostrophe in the
-  offset `151' RT`). If the vision model reads a geologic profile well, OCR becomes an
-  optional prefilter and the default should flip to off. That cannot be decided without
-  the step-14 deploy, so the default stays on until it is measured.
+- **Model:** `Qwen/Qwen3.6-27B-FP8`, pinned by immutable revision. The earlier NVFP4 checkpoint is
+  no longer the deployment target.
+- **GPU:** L40S only, maximum two production containers. No A100 fallback is part of the evaluated
+  contract.
+- **Serving:** vLLM with bounded startup settings, schema-constrained output, Qwen thinking
+  disabled, zero automatic retries, and scale-to-zero. Speculative MTP is not configured.
+- **OCR:** adaptive OCR recovery remains available in the current document adapter. Whether OCR
+  should remain the default or become a prefilter is open until a valid cloud field benchmark
+  compares it with direct vision; the provisional token case cannot decide this.
+- **Document truth:** canonical Docling JSON is the intended extraction intermediate. The compact
+  inventory remains a routing view, not a lossless source of field truth.
+- **Credentials:** GitHub stores only Modal client credentials for protected manual workflows.
+  Hugging Face access lives in Modal's `huggingface-secret`; repository `HF_TOKEN` is unused by
+  this topology.
+- **Frontend:** CesiumJS/3D Tiles remain planned for mapping, with Three.js/R3F planned for
+  engineering rendering.

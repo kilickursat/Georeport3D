@@ -25,6 +25,7 @@ CacheKeyField = Literal[
     "model_revision",
     "prompt_version",
     "preprocess_version",
+    "extraction_contract_version",
 ]
 CANONICAL_CACHE_KEY_FIELDS: tuple[CacheKeyField, ...] = (
     "document_sha256",
@@ -33,6 +34,7 @@ CANONICAL_CACHE_KEY_FIELDS: tuple[CacheKeyField, ...] = (
     "model_revision",
     "prompt_version",
     "preprocess_version",
+    "extraction_contract_version",
 )
 
 

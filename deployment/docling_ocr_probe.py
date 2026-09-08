@@ -9,8 +9,8 @@ currently blind to its primary source.
 `document/docling_adapter.py` sets `do_ocr=False` and says the decision needs "a
 deliberate decision about an OCR engine, its cost, and its accuracy" rather than a
 library default. This is the measurement that decision needs: the same page range
-parsed with OCR off and on, reporting characters recovered, regions detected, and a
-sample of the recovered text so the result can be judged rather than trusted.
+parsed with OCR off and on, reporting only aggregate character and region counts.
+Recovered text stays inside Modal and is never returned to the caller or printed.
 
 Diagnostic only. It calls Docling directly instead of going through the adapter,
 because the adapter deliberately exposes no page-range or OCR switch.
@@ -20,10 +20,17 @@ because the adapter deliberately exposes no page-range or OCR switch.
 
 from __future__ import annotations
 
-import json
+import sys
 from pathlib import Path
 
 import modal
+
+sys.path.insert(0, Path(__file__).parent.parent.as_posix())
+
+from georeport3d.evaluation.cloud import (  # noqa: E402
+    resolve_dataset,
+    verify_dataset_hash,
+)
 
 CPU = 4.0
 MEMORY_MB = 8192
@@ -33,16 +40,20 @@ TIMEOUT_SECONDS = 2700
 # 7-2 (boring and reach location plan), and 8-1A through 8-1I (geologic profiles).
 PAGE_RANGE = (79, 91)
 
-REPORT = Path(__file__).parent.parent / "cbd2_20per_geotechnicalbaselinereport.pdf"
-REMOTE_REPORT = "/data/report.pdf"
+ROOT = Path(__file__).parent.parent
+MANIFEST = ROOT / "config" / "evaluation_datasets.yaml"
+REMOTE_MANIFEST = "/opt/georeport3d/evaluation_datasets.yaml"
+DEFAULT_DATASET_ID = "dart-d2-cbd2-gbr-v1"
 
 app = modal.App("georeport3d-docling-ocr-probe")
+benchmark_data = modal.Volume.from_name("georeport3d-benchmark-data", create_if_missing=False)
 
 image = (
     modal.Image.debian_slim(python_version="3.13")
     .apt_install("libgl1", "libglib2.0-0")
-    .uv_pip_install("docling==2.123.0", "pydantic>=2.9,<3")
-    .add_local_file(REPORT.as_posix(), REMOTE_REPORT)
+    .uv_pip_install("docling==2.123.0", "pydantic>=2.9,<3", "pyyaml==6.0.3")
+    .add_local_python_source("georeport3d")
+    .add_local_file(MANIFEST.as_posix(), REMOTE_MANIFEST)
 )
 
 
@@ -72,21 +83,34 @@ def _summarise(document, label: str) -> dict:
                 "page": page,
                 "chars": sum(len(t) for t in texts.get(page, ())),
                 "regions": regions.get(page, 0),
-                "sample": " | ".join(texts.get(page, ()))[:260],
             }
             for page in pages
         ],
     }
 
 
-@app.function(image=image, cpu=CPU, memory=MEMORY_MB, timeout=TIMEOUT_SECONDS)
-def probe() -> dict:
+@app.function(
+    image=image,
+    cpu=CPU,
+    memory=MEMORY_MB,
+    timeout=TIMEOUT_SECONDS,
+    volumes={
+        "/benchmarks": benchmark_data.with_mount_options(read_only=True),
+    },
+)
+def probe(dataset_id: str) -> dict:
     """Parse the drawing sheets with OCR off, then on, and compare."""
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
-    report = Path(REMOTE_REPORT)
+    case, report = resolve_dataset(Path(REMOTE_MANIFEST), dataset_id)
+    if any(
+        page not in case.page_selection
+        for page in range(PAGE_RANGE[0], PAGE_RANGE[1] + 1)
+    ):
+        raise RuntimeError("dataset does not allow the configured OCR probe pages")
+    verify_dataset_hash(report, case.sha256)
     results = []
 
     for label, do_ocr in (("ocr_off", False), ("ocr_on", True)):
@@ -109,9 +133,9 @@ def probe() -> dict:
 
 
 @app.local_entrypoint()
-def main() -> None:
-    data = probe.remote()
-    Path("docling_ocr_probe_result.json").write_text(json.dumps(data, indent=2))
+def main(dataset_id: str = DEFAULT_DATASET_ID) -> None:
+    case, _path = resolve_dataset(MANIFEST, dataset_id)
+    data = probe.remote(case.dataset_id)
 
     off, on = data["results"][0], data["results"][1]
     by_page_on = {p["page"]: p for p in on["pages"]}
@@ -132,7 +156,4 @@ def main() -> None:
         f"{sum(p['chars'] for p in on['pages']):>11}"
     )
     print("=" * 78)
-    print("\nRecovered text with OCR on:")
-    for row in on["pages"]:
-        if row["sample"]:
-            print(f"\n  p{row['page']}: {row['sample'][:230]}")
+    print("\nSanitized summary only; recovered OCR text remains inside Modal.")

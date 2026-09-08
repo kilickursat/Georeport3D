@@ -56,10 +56,11 @@ def test_cache_key_matches_independent_fixed_vector() -> None:
         model_revision="revision",
         prompt_version="prompt-v1",
         preprocess_version="pre-v1",
+        extraction_contract_version="geotechnical-extraction-v1",
     )
 
     assert make_cache_key(parts) == (
-        "3ba2e12ea592fc7a6b5d931b31d08fb6ef5ae7f74badef5356bbebc8a0a420ee"
+        "0be296537d5086125ba71b4a8e7283e67911e19f2609702e4919c7e5affdaa8d"
     )
 
 
@@ -72,6 +73,7 @@ def test_cache_key_matches_independent_fixed_vector() -> None:
         ("model_revision", "revision-2"),
         ("prompt_version", "prompt-v2"),
         ("preprocess_version", "pre-v2"),
+        ("extraction_contract_version", "geotechnical-extraction-v2"),
     ),
 )
 def test_every_cache_component_changes_key(field: str, value: str) -> None:
@@ -82,6 +84,7 @@ def test_every_cache_component_changes_key(field: str, value: str) -> None:
         model_revision="revision",
         prompt_version="prompt-v1",
         preprocess_version="pre-v1",
+        extraction_contract_version="geotechnical-extraction-v1",
     )
 
     assert make_cache_key(replace(base, **{field: value})) != make_cache_key(base)

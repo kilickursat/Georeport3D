@@ -20,16 +20,24 @@ so only the layout model runs, and it runs on CPU.
 
     modal run deployment/docling_bench.py
 
-Reads nothing from the network and writes nothing outside the container.
+The report must already exist in the read-only benchmark-data Volume. The function
+returns only structural hashes and aggregate counts; it never returns recovered text.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
+import sys
 from pathlib import Path
 
 import modal
+
+sys.path.insert(0, Path(__file__).parent.parent.as_posix())
+
+from georeport3d.evaluation.cloud import (  # noqa: E402
+    resolve_dataset,
+    verify_dataset_hash,
+)
 
 # The parse holds the layout model plus a rendered page bitmap at once. 8 GB is
 # ample and costs the same order as 4 GB for a run this short, so the benchmark is
@@ -39,10 +47,13 @@ MEMORY_MB = 8192
 TIMEOUT_SECONDS = 1800
 RUNS = 3
 
-REPORT = Path(__file__).parent.parent / "cbd2_20per_geotechnicalbaselinereport.pdf"
-REMOTE_REPORT = "/data/report.pdf"
+ROOT = Path(__file__).parent.parent
+MANIFEST = ROOT / "config" / "evaluation_datasets.yaml"
+REMOTE_MANIFEST = "/opt/georeport3d/evaluation_datasets.yaml"
+DEFAULT_DATASET_ID = "dart-d2-cbd2-gbr-v1"
 
 app = modal.App("georeport3d-docling-bench")
+benchmark_data = modal.Volume.from_name("georeport3d-benchmark-data", create_if_missing=False)
 
 # Docling pulls its layout and OCR weights from the HF Hub. They are public, so an
 # anonymous download works - but it is rate limited, and a run that trips the limit
@@ -76,9 +87,10 @@ image = (
         # backend the project actually ships rather than whatever is newest.
         "docling==2.123.0",
         "pydantic>=2.9,<3",
+        "pyyaml==6.0.3",
     )
     .add_local_python_source("document", "georeport3d")
-    .add_local_file(REPORT.as_posix(), REMOTE_REPORT)
+    .add_local_file(MANIFEST.as_posix(), REMOTE_MANIFEST)
 )
 
 
@@ -130,8 +142,11 @@ def _compare(runs: list[dict]) -> list[str]:
     memory=MEMORY_MB,
     timeout=TIMEOUT_SECONDS,
     secrets=[hf_secret],
+    volumes={
+        "/benchmarks": benchmark_data.with_mount_options(read_only=True),
+    },
 )
-def benchmark() -> dict:
+def benchmark(dataset_id: str) -> dict:
     """Parse the report `RUNS` times and report determinism, coverage, and routing."""
     import time
 
@@ -140,7 +155,8 @@ def benchmark() -> dict:
     from document.docling_adapter import DoclingDocumentParser
     from document.inventory import build_inventory
 
-    report = Path(REMOTE_REPORT)
+    case, report = resolve_dataset(Path(REMOTE_MANIFEST), dataset_id)
+    verify_dataset_hash(report, case.sha256)
     sha = hashlib.sha256(report.read_bytes()).hexdigest()
 
     runs, timings, first = [], [], None
@@ -182,18 +198,6 @@ def benchmark() -> dict:
         "routing": dict(sorted(routing.items())),
         "origins": dict(sorted(origins.items())),
         "regions_with_hints": hinted,
-        "routed_non_default": [
-            {
-                "page": c.page_number,
-                "type": c.source_type,
-                "score": c.score,
-                "terms": list(c.matched_terms),
-                "origin": c.origin,
-                "caption": (c.caption or "")[:90],
-            }
-            for c in inventory.candidates()
-            if c.source_type in ("borehole_log", "section", "map")
-        ],
         "per_page": [
             {"page": p.page_number, "chars": len(p.text), "regions": len(p.figures)}
             for p in inventory.pages
@@ -202,10 +206,9 @@ def benchmark() -> dict:
 
 
 @app.local_entrypoint()
-def main() -> None:
-    result = benchmark.remote()
-
-    Path("docling_bench_result.json").write_text(json.dumps(result, indent=2))
+def main(dataset_id: str = DEFAULT_DATASET_ID) -> None:
+    case, _path = resolve_dataset(MANIFEST, dataset_id)
+    result = benchmark.remote(case.dataset_id)
 
     print()
     print("=" * 78)
@@ -224,7 +227,4 @@ def main() -> None:
     print("=" * 78)
     for diff in result["diffs"][:25]:
         print(f"  DIFF {diff}")
-    print()
-    for row in result["routed_non_default"]:
-        print(f"  p{row['page']:<4} {row['type']:<13} {row['score']:.2f} {row['terms']}")
-    print("\nwrote docling_bench_result.json")
+    print("\nSanitized summary only; raw document content remains in Modal storage.")

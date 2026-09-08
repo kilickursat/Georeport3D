@@ -16,6 +16,7 @@ class InferenceRequest:
     prompt_version: str = "v1"
     preprocess_version: str = "v1"
     model_revision: str | None = None
+    response_schema: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

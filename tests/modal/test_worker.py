@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import base64
+import binascii
 import json
 import runpy
 import subprocess
@@ -22,6 +24,7 @@ PURE_HELPERS = {
     "_stop_process",
     "_success_result",
     "_validate_request",
+    "_validate_response_schema",
     "_vllm_command",
     "_wait_ready",
 }
@@ -60,6 +63,8 @@ def _load_helpers(*extra_helpers: str, **overrides: object) -> dict[str, object]
     namespace: dict[str, object] = {
         "__builtins__": __builtins__,
         "json": json,
+        "base64": base64,
+        "binascii": binascii,
         "subprocess": subprocess,
         "time": time,
         "urllib": urllib,
@@ -71,6 +76,13 @@ def _load_helpers(*extra_helpers: str, **overrides: object) -> dict[str, object]
         "MAX_MESSAGES_PER_REQUEST": 32,
         "MAX_CONTENT_PARTS_PER_MESSAGE": 16,
         "MAX_CONTENT_CHARS_PER_REQUEST": 4_000_000,
+        "MAX_RESPONSE_SCHEMA_CHARS": 100_000,
+        "ALLOWED_MESSAGE_ROLES": frozenset({"system", "user"}),
+        "ALLOWED_IMAGE_PREFIXES": (
+            "data:image/png;base64,",
+            "data:image/jpeg;base64,",
+            "data:image/webp;base64,",
+        ),
     }
     namespace.update(overrides)
     exec(compile(helper_module, str(WORKER_PATH), "exec"), namespace)
@@ -197,7 +209,7 @@ class ModalWorkerContractTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 validate_revision(invalid)
 
-    def test_vllm_command_uses_loopback_nvfp4_and_two_mtp_tokens(self) -> None:
+    def test_vllm_command_uses_measured_fp8_l40s_limits_without_speculation(self) -> None:
         helpers = _load_helpers()
         command = helpers["_vllm_command"](EXPECTED_MODEL_ID, EXPECTED_MODEL_REVISION)
 
@@ -211,14 +223,23 @@ class ModalWorkerContractTests(unittest.TestCase):
                 EXPECTED_MODEL_REVISION,
                 "--tokenizer-revision",
                 EXPECTED_MODEL_REVISION,
+                "--trust-remote-code",
                 "--host",
                 "127.0.0.1",
                 "--port",
                 "8000",
-                "--speculative-config",
-                '{"method":"mtp","num_speculative_tokens":2}',
+                "--gpu-memory-utilization",
+                "0.90",
+                "--max-model-len",
+                "32768",
+                "--max-num-seqs",
+                "16",
+                "--limit-mm-per-prompt",
+                '{"image":1}',
+                "--disable-log-requests",
             ],
         )
+        self.assertNotIn("--speculative-config", command)
         self.assertNotIn("marlin", " ".join(command).lower())
 
     def test_wait_ready_returns_only_for_http_200(self) -> None:
@@ -310,6 +331,10 @@ class ModalWorkerContractTests(unittest.TestCase):
                 {"role": "user", "content": [{"type": "text", "text": "page"}]},
             ],
             "max_tokens": 9000,
+            "response_schema": {
+                "type": "object",
+                "properties": {"boreholes": {"type": "array"}},
+            },
             "model_revision": EXPECTED_MODEL_REVISION,
             "prompt_version": "prompt-v2",
             "preprocess_version": "pre-v4",
@@ -322,6 +347,7 @@ class ModalWorkerContractTests(unittest.TestCase):
             validated,
             (
                 request["messages"],
+                request["response_schema"],
                 2500,
                 EXPECTED_MODEL_REVISION,
                 "prompt-v2",
@@ -333,6 +359,7 @@ class ModalWorkerContractTests(unittest.TestCase):
         valid: dict[str, Any] = {
             "messages": [{"role": "user", "content": "page"}],
             "max_tokens": 1,
+            "response_schema": {"type": "object", "properties": {}},
             "model_revision": EXPECTED_MODEL_REVISION,
             "prompt_version": "prompt-v1",
             "preprocess_version": "pre-v1",
@@ -351,6 +378,7 @@ class ModalWorkerContractTests(unittest.TestCase):
             {**valid, "max_tokens": 0},
             {**valid, "max_tokens": True},
             {key: value for key, value in valid.items() if key != "max_tokens"},
+            {key: value for key, value in valid.items() if key != "response_schema"},
             {**valid, "model_revision": 4},
             {**valid, "model_revision": None},
             {**valid, "model_revision": "0" * 40},
@@ -367,6 +395,7 @@ class ModalWorkerContractTests(unittest.TestCase):
         valid: dict[str, Any] = {
             "messages": [{"role": "user", "content": "page"}],
             "max_tokens": 1,
+            "response_schema": {"type": "object", "properties": {}},
             "model_revision": EXPECTED_MODEL_REVISION,
             "prompt_version": "prompt-v1",
             "preprocess_version": "pre-v1",
@@ -412,6 +441,85 @@ class ModalWorkerContractTests(unittest.TestCase):
         for index, request in enumerate(invalid_requests):
             with self.subTest(index=index), self.assertRaises(ValueError):
                 helpers["_validate_request"](request)
+
+    def test_validate_request_allows_one_inline_image_and_rejects_remote_or_multiple_images(
+        self,
+    ) -> None:
+        valid: dict[str, Any] = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "extract"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,aW1hZ2U="},
+                        },
+                    ],
+                }
+            ],
+            "max_tokens": 1,
+            "response_schema": {"type": "object"},
+            "model_revision": EXPECTED_MODEL_REVISION,
+            "prompt_version": "prompt-v1",
+            "preprocess_version": "pre-v1",
+        }
+        validate = _load_helpers()["_validate_request"]
+
+        validate(valid)
+
+        image = valid["messages"][0]["content"][1]
+        invalid = [
+            {**image, "image_url": {"url": "https://example.invalid/report.png"}},
+            {**image, "image_url": {"url": "data:image/png;base64,not-base64"}},
+            {**image, "image_url": {"url": "data:image/png;base64,"}},
+        ]
+        for part in invalid:
+            request = {
+                **valid,
+                "messages": [{"role": "user", "content": [part]}],
+            }
+            with self.subTest(part=part), self.assertRaises(ValueError):
+                validate(request)
+
+        with self.assertRaises(ValueError):
+            validate(
+                {
+                    **valid,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [image, image],
+                        }
+                    ],
+                }
+            )
+
+    def test_validate_response_schema_requires_a_bounded_json_object(self) -> None:
+        helpers = _load_helpers(MAX_RESPONSE_SCHEMA_CHARS=80)
+        validate = helpers["_validate_response_schema"]
+        valid = {"type": "object", "properties": {"value": {"type": "string"}}}
+
+        self.assertIs(validate(valid), valid)
+
+        recursive: dict[str, object] = {"type": "object"}
+        recursive["self"] = recursive
+        invalid_schemas = [
+            None,
+            {},
+            [],
+            {"type": "array", "items": {}},
+            {"type": "object", "default": float("nan")},
+            {"type": "object", "default": object()},
+            recursive,
+            {"type": "object", "description": "x" * 81},
+        ]
+        for index, schema in enumerate(invalid_schemas):
+            with self.subTest(index=index), self.assertRaisesRegex(
+                ValueError,
+                "^invalid request$",
+            ):
+                validate(schema)
 
     def test_batch_and_server_helpers_reject_oversize_or_dead_work(self) -> None:
         helpers = _load_helpers("_server_is_alive", "_validate_batch")
@@ -483,10 +591,15 @@ class ModalWorkerContractTests(unittest.TestCase):
             "TIMEOUT_SECONDS": 900,
             "STARTUP_TIMEOUT_SECONDS": 600,
             "MAX_OUTPUT_TOKENS": 2500,
+            "MAX_RESPONSE_SCHEMA_CHARS": 100_000,
         }
         for name, expected in literal_constants.items():
             with self.subTest(name=name):
                 self.assertEqual(ast.literal_eval(_assignment(tree, name)), expected)
+        self.assertEqual(
+            ast.literal_eval(_assignment(tree, "_CU13_LIB")),
+            "/usr/local/lib/python3.13/site-packages/nvidia/cu13/lib",
+        )
 
         identity_imports = [
             node
@@ -527,6 +640,50 @@ class ModalWorkerContractTests(unittest.TestCase):
                 "openai==1.100.0",
                 "httpx==0.28.1",
             },
+        )
+
+        env_call = _call_with_path(
+            tree,
+            "modal.Image.from_registry.entrypoint.uv_pip_install.env",
+        )
+        env = env_call.args[0]
+        self.assertIsInstance(env, ast.Dict)
+        env_values = {
+            ast.literal_eval(key): value
+            for key, value in zip(env.keys, env.values, strict=True)
+        }
+        self.assertEqual(
+            {
+                key: ast.literal_eval(env_values[key])
+                for key in (
+                    "HF_XET_HIGH_PERFORMANCE",
+                    "HF_HOME",
+                    "VLLM_CACHE_ROOT",
+                    "PYTORCH_CUDA_ALLOC_CONF",
+                )
+            },
+            {
+                "HF_XET_HIGH_PERFORMANCE": "1",
+                "HF_HOME": "/root/.cache/huggingface",
+                "VLLM_CACHE_ROOT": "/root/.cache/vllm",
+                "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+            },
+        )
+        loader_path = env_values["LD_LIBRARY_PATH"]
+        self.assertIsInstance(loader_path, ast.JoinedStr)
+        interpolations = [
+            value for value in loader_path.values if isinstance(value, ast.FormattedValue)
+        ]
+        self.assertEqual(len(interpolations), 1)
+        self.assertIsInstance(interpolations[0].value, ast.Name)
+        self.assertEqual(interpolations[0].value.id, "_CU13_LIB")
+        self.assertEqual(
+            "".join(
+                str(value.value)
+                for value in loader_path.values
+                if isinstance(value, ast.Constant)
+            ),
+            ":/usr/local/cuda/lib64:/usr/local/nvidia/lib64",
         )
 
         volume_calls = [
@@ -659,6 +816,21 @@ class ModalWorkerContractTests(unittest.TestCase):
         self.assertEqual(_keyword(completion, "model").id, "MODEL_ID")
         self.assertEqual(_keyword(completion, "messages").id, "messages")
         self.assertEqual(_keyword(completion, "max_tokens").id, "max_tokens")
+        extra_body = _keyword(completion, "extra_body")
+        self.assertIsInstance(extra_body, ast.Dict)
+        extra = {
+            ast.literal_eval(key): value
+            for key, value in zip(extra_body.keys, extra_body.values, strict=True)
+        }
+        structured = extra["structured_outputs"]
+        self.assertIsInstance(structured, ast.Dict)
+        self.assertEqual(ast.literal_eval(structured.keys[0]), "json")
+        self.assertIsInstance(structured.values[0], ast.Name)
+        self.assertEqual(structured.values[0].id, "response_schema")
+        chat_template = extra["chat_template_kwargs"]
+        self.assertIsInstance(chat_template, ast.Dict)
+        self.assertEqual(ast.literal_eval(chat_template.keys[0]), "enable_thinking")
+        self.assertIs(ast.literal_eval(chat_template.values[0]), False)
 
         failure_codes = {
             ast.literal_eval(call.args[0])

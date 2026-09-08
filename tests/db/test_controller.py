@@ -31,6 +31,7 @@ from georeport3d.db.repositories import (
     ProjectRepository,
 )
 from georeport3d.db.session import unit_of_work
+from georeport3d.domain.models import GeotechnicalExtraction
 from georeport3d.inference.base import (
     InferenceFailure,
     InferenceMetadata,
@@ -43,6 +44,7 @@ from georeport3d.services.controller import JobController
 from georeport3d.services.job_state import TERMINAL_STATES
 
 pytestmark = pytest.mark.integration
+
 
 def _valid_output(document_id: UUID | str) -> dict[str, object]:
     return {
@@ -71,6 +73,79 @@ def _output_with_evidence(
                     "confidence": 0.9,
                 }
             ],
+        }
+    ]
+    return output
+
+
+def _output_with_collection_evidence(
+    document_id: UUID | str,
+    evidence_document_id: UUID | str,
+    collection: str,
+) -> dict[str, object]:
+    output = _valid_output(document_id)
+    evidence = [
+        {
+            "document_id": str(evidence_document_id),
+            "page_number": 1,
+            "source_type": "section",
+            "confidence": 0.9,
+        }
+    ]
+    if collection == "contacts":
+        output[collection] = [
+            {
+                "contact_id": "contact-1",
+                "unit_a": "sandstone",
+                "unit_b": "mudstone",
+                "evidence": evidence,
+            }
+        ]
+    else:
+        output[collection] = [{"section_id": "section-1", "evidence": evidence}]
+    return output
+
+
+def _output_with_all_evidence(document_id: UUID | str) -> dict[str, object]:
+    def untrusted_evidence(source_type: str) -> dict[str, object]:
+        return {
+            "document_id": str(document_id),
+            "page_number": 1,
+            "source_type": source_type,
+            "model_id": "model-supplied-id",
+            "model_revision": "model-supplied-revision",
+            "prompt_version": "model-supplied-prompt",
+            "preprocess_version": "model-supplied-preprocess",
+        }
+
+    output = _valid_output(document_id)
+    output["boreholes"] = [
+        {
+            "borehole_id": "BH-1",
+            "total_depth": 2.0,
+            "intervals": [
+                {
+                    "depth_from": 0.0,
+                    "depth_to": 2.0,
+                    "lithology": "sandstone",
+                    "evidence": [untrusted_evidence("borehole_log")],
+                }
+            ],
+            "evidence": [untrusted_evidence("borehole_log")],
+        }
+    ]
+    output["contacts"] = [
+        {
+            "contact_id": "contact-1",
+            "unit_a": "sandstone",
+            "unit_b": "mudstone",
+            "evidence": [untrusted_evidence("figure")],
+        }
+    ]
+    output["sections"] = [
+        {
+            "section_id": "section-1",
+            "evidence": [untrusted_evidence("section")],
         }
     ]
     return output
@@ -285,6 +360,9 @@ def test_a_miss_runs_the_pipeline_and_records_what_it_spent(
     assert outcome.output == output
     assert outcome.actual_usd == Decimal("0.00666")
     assert len(provider.calls) == 1
+    assert provider.calls[0][0].response_schema == (
+        GeotechnicalExtraction.model_json_schema()
+    )
 
     with unit_of_work(session_factory) as session:
         key = controller.cache_key_for(digest, "f" * 64)
@@ -754,7 +832,7 @@ def test_stale_advance_cannot_revive_a_cancelled_job(
     try:
         try:
             controller._advance(job_id, "GPU_AUTHORIZED", "GPU_RUNNING")
-        except Exception as exc:  # noqa: BLE001 - either a no-op or an explicit stale error is safe
+        except Exception as exc:  # noqa: BLE001 - no-op or explicit stale error is safe
             stale_error = exc
 
         with unit_of_work(session_factory) as session:
@@ -928,3 +1006,134 @@ def test_document_provenance_must_match_before_completion_or_caching(
     assert outcome.error_code == "DOCUMENT_PROVENANCE_MISMATCH"
     with unit_of_work(session_factory) as session:
         assert CacheRepository(session).get(controller.cache_key_for(digest, "f" * 64)) is None
+
+
+@pytest.mark.parametrize("collection", ["contacts", "sections"])
+def test_contact_and_section_evidence_must_match_document_before_caching(
+    session_factory: sessionmaker[Session],
+    collection: str,
+) -> None:
+    document_id, digest = _document(session_factory)
+    settings = _settings()
+    output = _output_with_collection_evidence(
+        document_id,
+        "different-document",
+        collection,
+    )
+    provider = _RecordingProvider(
+        InferenceResult(ok=True, metadata=_metadata(settings), output=output)
+    )
+    controller = _controller(session_factory, provider)
+
+    outcome = _run(controller, document_id, digest)
+
+    assert outcome.state == "FAILED"
+    assert outcome.error_code == "DOCUMENT_PROVENANCE_MISMATCH"
+    with unit_of_work(session_factory) as session:
+        assert CacheRepository(session).get(controller.cache_key_for(digest, "f" * 64)) is None
+
+
+def test_unknown_extraction_key_fails_schema_validation(
+    session_factory: sessionmaker[Session],
+) -> None:
+    document_id, digest = _document(session_factory)
+    settings = _settings()
+    output = _valid_output(document_id)
+    output["invented_field"] = "must not be ignored"
+    provider = _RecordingProvider(
+        InferenceResult(ok=True, metadata=_metadata(settings), output=output)
+    )
+    controller = _controller(session_factory, provider)
+
+    outcome = _run(controller, document_id, digest)
+
+    assert outcome.state == "FAILED"
+    assert outcome.error_code == "SCHEMA_VALIDATION_FAILED"
+    with unit_of_work(session_factory) as session:
+        assert CacheRepository(session).get(controller.cache_key_for(digest, "f" * 64)) is None
+
+
+def test_interval_beyond_total_depth_fails_domain_validation(
+    session_factory: sessionmaker[Session],
+) -> None:
+    document_id, digest = _document(session_factory)
+    settings = _settings()
+    output = _output_with_evidence(document_id, document_id)
+    boreholes = output["boreholes"]
+    assert isinstance(boreholes, list)
+    borehole = boreholes[0]
+    assert isinstance(borehole, dict)
+    borehole["total_depth"] = 1.0
+    borehole["intervals"] = [
+        {
+            "depth_from": 0.0,
+            "depth_to": 2.0,
+            "lithology": "sandstone",
+            "evidence": borehole["evidence"],
+        }
+    ]
+    provider = _RecordingProvider(
+        InferenceResult(ok=True, metadata=_metadata(settings), output=output)
+    )
+    controller = _controller(session_factory, provider)
+
+    outcome = _run(controller, document_id, digest)
+
+    assert outcome.state == "FAILED"
+    assert outcome.error_code == "DOMAIN_VALIDATION_FAILED"
+    with unit_of_work(session_factory) as session:
+        assert CacheRepository(session).get(controller.cache_key_for(digest, "f" * 64)) is None
+
+
+def test_success_returns_and_caches_normalized_extraction(
+    session_factory: sessionmaker[Session],
+) -> None:
+    document_id, digest = _document(session_factory)
+    settings = _settings()
+    raw_output: dict[str, object] = {"document_id": str(document_id)}
+    provider = _RecordingProvider(
+        InferenceResult(ok=True, metadata=_metadata(settings), output=raw_output)
+    )
+    controller = _controller(session_factory, provider)
+
+    outcome = _run(controller, document_id, digest)
+
+    normalized = GeotechnicalExtraction.model_validate(raw_output).model_dump(mode="json")
+    assert outcome.state == "COMPLETED"
+    assert outcome.output == normalized
+    assert outcome.output != raw_output
+    with unit_of_work(session_factory) as session:
+        cached = CacheRepository(session).get(controller.cache_key_for(digest, "f" * 64))
+    assert cached == normalized
+
+
+def test_every_evidence_collection_gets_trusted_inference_identity(
+    session_factory: sessionmaker[Session],
+) -> None:
+    document_id, digest = _document(session_factory)
+    settings = _settings()
+    raw_output = _output_with_all_evidence(document_id)
+    provider = _RecordingProvider(
+        InferenceResult(ok=True, metadata=_metadata(settings), output=raw_output)
+    )
+    controller = _controller(session_factory, provider)
+
+    outcome = _run(controller, document_id, digest)
+
+    assert outcome.state == "COMPLETED"
+    assert outcome.output is not None
+    extraction = GeotechnicalExtraction.model_validate(outcome.output)
+    citations = list(extraction.boreholes[0].evidence)
+    citations.extend(extraction.boreholes[0].intervals[0].evidence)
+    citations.extend(extraction.contacts[0].evidence)
+    citations.extend(extraction.sections[0].evidence)
+    assert len(citations) == 4
+    for evidence in citations:
+        assert evidence.model_id == settings.model_id
+        assert evidence.model_revision == settings.model_revision
+        assert evidence.prompt_version == settings.prompt_version
+        assert evidence.preprocess_version == settings.preprocess_version
+
+    with unit_of_work(session_factory) as session:
+        cached = CacheRepository(session).get(controller.cache_key_for(digest, "f" * 64))
+    assert cached == outcome.output
