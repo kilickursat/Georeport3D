@@ -1,93 +1,165 @@
-# Modal serverless deployment guide
+# Modal cloud runbook
 
-## Current status: code-level only
+## Status and operating boundary
 
-The repository namespace collision has been removed, the one-process-per-container worker is in
-`deployment/modal_worker.py`, and the CPU provider resolves the deployed class lazily. Import-safe
-fake and source checks cover these contracts. The official Modal SDK, image build, deployment,
-Qwen load, vLLM startup, remote invocation, GPU memory, cost, and observed scale-to-zero behavior
-remain unverified in this workstation.
+The production worker and document-evaluation harness are implemented and contract-tested at
+code level. **This revision has not been deployed or evaluated in Modal.** No image build, model
+load, vLLM startup, document conversion, paid inference, cost measurement, or scale-to-zero
+observation was performed for this change.
 
-No Modal setup, deployment, model download, vLLM launch, or GPU action was attempted here. The
-next investigation starts only after the user runs the deployment in an approved environment and
-returns a redacted error or evidence.
+Use the local workspace only for source edits, GPU-free tests, commits, and pull requests. Do not
+download model weights, parse or render benchmark/customer documents, run OCR, or start vLLM on a
+restricted workstation or GitHub runner. Those workloads belong in Modal.
 
-## Declared production shape
+There are two deliberately separate manual operations:
 
-- App: `georeport3d-qwen`
-- Class: `QwenWorker`
+1. `cloud-evaluation.yml` evaluates one allow-listed private dataset in Modal environment
+   `evaluation` and returns a sanitized summary.
+2. `deploy.yml` registers the production worker in Modal environment `main`.
+
+Neither workflow is triggered by a pull request. Evaluation is not production deployment, and a
+successful evaluation must not silently deploy or expose the application.
+
+## Production worker declaration
+
+- Modal app: `georeport3d-qwen`
+- Modal class: `QwenWorker`
 - Model: `Qwen/Qwen3.6-27B-FP8`
-- Model revision: `e89b16ebf1988b3d6befa7de50abc2d76f26eb09`
-- GitHub environment: `modal-production`
-- Modal environment `main`
-- Secret: `huggingface-secret`
-- GPU: L40S, at most two containers
-- Containers: minimum 0, maximum 1, buffer 0
+- Revision: `e89b16ebf1988b3d6befa7de50abc2d76f26eb09`
+- GPU: one exact L40S profile; no hardware fallback
+- Scaling: minimum 0, maximum 2, buffer 0
 - Scale-down window: 10 seconds
 - Invocation timeout: 900 seconds
 - Startup timeout: 600 seconds
 - Automatic retries: 0
-- Cache volumes: `georeport3d-hf-cache` and `georeport3d-vllm-cache`
+- Context bound: 32,768 tokens
+- Sequence bound: 16
+- Multimodal bound: one image per prompt
+- Cache Volumes: `georeport3d-hf-cache` and `georeport3d-vllm-cache`
+- Modal secret: `huggingface-secret`, exposing `HF_TOKEN`
 
-Each warm class container owns one inherited-output vLLM subprocess. Each batch uses one
-loopback OpenAI-compatible client and returns one validated envelope per input. Production has no
-automatic fallback to mock inference.
+Each warm container owns one loopback vLLM subprocess. The startup command includes the CUDA 13
+library path and bounded settings used by the successful earlier FP8/L40S probe. Each extraction
+request carries a required JSON Schema; the worker passes it to vLLM structured outputs and calls
+Qwen with thinking disabled. Returned JSON is still subject to Pydantic, domain, metadata, and
+evidence validation before persistence.
 
-`georeport3d/model_identity.py` is the only deployable model identity source. Its revision is
-validated as exactly 40 lowercase hexadecimal characters when imported. Settings and the worker
-consume those constants; the manual workflow has no model or revision input. vLLM receives the
-same commit through both `--revision` and `--tokenizer-revision`, so model and tokenizer cannot
-drift independently.
+These are source-code properties. Earlier probe measurements do not prove that this exact branch
+still builds, starts, fits, serves, or scales down correctly in Modal.
 
-The `huggingface-secret` Modal secret is attached to the class and must expose `HF_TOKEN`. The
-pinned checkpoint is public and ungated, so the token is not required for access; it raises the
-anonymous download rate limit and keeps the deployment working if the repository ever becomes
-gated.
+`georeport3d/model_identity.py` is the single source of the model ID and immutable revision.
+Settings, provider metadata checks, cache identity, and the worker must agree. Production rejects
+the mock provider and does not fall back to it when Modal is unavailable.
 
-Modal Secret and Volume names are resolved within the selected Modal environment. The workflow
-sets `MODAL_ENVIRONMENT=main` and also passes `--env main`; therefore `huggingface-secret`,
-`georeport3d-hf-cache`, and `georeport3d-vllm-cache` must exist in Modal environment `main` (the
-volumes may be created there by the declarations).
+## Protected evaluation environment
 
-## Manual GitHub Actions boundary
-
-The manual-only deploy workflow accepts only the exact confirmation `deploy`, rejects any ref
-other than `refs/heads/main`, and uses the protected GitHub environment `modal-production`.
-Configure these GitHub environment secrets:
+Before enabling a paid run, configure a GitHub environment named `modal-evaluation` with required
+reviewers and branch restrictions. Supply these GitHub environment secrets:
 
 - `MODAL_ID`
 - `MODAL_ID_SECRET`
 
-The workflow maps them to the Modal SDK runner variables `MODAL_TOKEN_ID` and
-`MODAL_TOKEN_SECRET`. The `MODAL_TOKEN_*` names are not the GitHub secret names. The workflow does
-not print their values, run a smoke inference, invoke `QwenWorker.extract_batch`, or download model
-weights onto the runner. Deployment identity and rollback guidance are printed only after the
-deploy command succeeds.
+The workflow maps them to `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` only for the Modal client. It
+uses `permissions: contents: read`, serializes evaluations, and requires the exact confirmation
+`evaluate`.
 
-## Later operator commands
+The repository-level `HF_TOKEN` is not consumed by this topology. Hugging Face access happens
+inside Modal through `huggingface-secret`. After checking that no external workflow uses the
+repository secret, the repository owner should remove or rotate it; application code must not
+copy it into GitHub Actions.
 
-Run these commands only on an approved network-capable workstation, after reviewing the release.
-They are documentation, not commands executed by this code-level pass.
+## Modal evaluation resources
 
-```powershell
-uv sync --python 3.13 --extra dev --extra modal
-uv run modal setup
-uv run modal deploy --env main deployment/modal_worker.py
+Create or verify these resources in Modal environment `evaluation` before approving the workflow:
+
+| Resource | Required state |
+| --- | --- |
+| `georeport3d-benchmark-data` | Existing Volume, mounted read-only at `/benchmarks` |
+| `georeport3d-benchmark-results` | Existing Volume, mounted read/write at `/results` |
+| `georeport3d-hf-cache` | Cloud cache attached to Modal evaluation functions, never the runner |
+| `huggingface-secret` | Modal secret exposing `HF_TOKEN`; never returned to Actions |
+
+The current manifest entry is metadata only:
+
+| Field | Expected value |
+| --- | --- |
+| Dataset ID | `dart-d2-cbd2-gbr-v1` |
+| Modal path | `/benchmarks/dart-d2/cbd2_20per_geotechnicalbaselinereport.pdf` |
+| SHA-256 | `b40d2473e54da9a646aa956f5b2fc96f2bb2ff0f896f24f74f88274e1c58e68a` |
+| Annotation state | `provisional_tokens` |
+
+Provision the document through an approved cloud-side process. Do not use a local entrypoint,
+Modal image layer, GitHub artifact, or repository commit to upload it. The remote function checks
+the allow-listed path and full SHA-256 before rendering or inference and fails closed if the
+object is absent or changed.
+
+The case is not field-level truth. It may emit `diagnostic_token_recall`, but it cannot emit field
+precision, field recall, F1, or an all-critical-fields-correct release result.
+
+## Running the evaluation
+
+Preferred operator path:
+
+1. Open **Actions -> Cloud document evaluation (Modal) -> Run workflow** on reviewed `main`.
+2. Enter the exact confirmation `evaluate`.
+3. Approve the protected `modal-evaluation` environment after checking budget and dataset
+   residency.
+4. Review the sanitized job summary and the raw artifact only inside the restricted results
+   Volume.
+
+The workflow creates a collision-resistant run ID from the commit SHA, GitHub run ID, and attempt.
+For an approved cloud shell or operator environment, the equivalent explicit command is:
+
+```bash
+uv run --python 3.13 modal run --env evaluation \
+  deployment/qwen_vision_probe.py --run-id <unique-run-id>
 ```
 
-Dependency sync installs the official Modal SDK and other Python packages. `modal setup` stores
-user credentials outside the repository. Never commit Modal tokens, copy them into a committed
-`.env`, or paste them into logs or issue reports.
+`<unique-run-id>` must be 3-128 path-safe characters. Reusing it fails rather than overwriting an
+existing raw artifact.
 
-`modal deploy --env main` builds and registers the app declarations in Modal environment `main`.
-It does not call
-`QwenWorker.extract_batch`, but image-build, storage, and network charges can still occur. The
-first separately authorized remote invocation may create a warm container, start vLLM, and fetch
-model weights into the named caches inside Modal, never onto this workstation.
+Raw answers and per-page diagnostic detail are written only to:
 
-## Production provider selection
+```text
+/results/runs/<unique-run-id>/qwen_vision.json
+```
 
-Supply secrets through the deployment platform, not committed files. The non-secret selection is:
+The GitHub runner receives only aggregate counts, timing, runtime identity, memory, estimated
+cost, completion state, and the fact that a raw artifact was retained. Source text, identifiers,
+page images, prompts, OCR output, and model answers must not appear in Actions logs or artifacts.
+Configure Volume retention and access before using confidential material.
+
+## Interpreting the current benchmark
+
+The DART token set is a provisional diagnostic, not a complete inventory of any page. Historic
+`29/30` token recall does not establish structured extraction accuracy, and historic `10/18`
+identifier confirmation was invalidated by substring matching. Exact boundary-aware matching is
+now used, but no replacement accuracy claim is permitted until human-reviewed `field_gold`
+annotations exist.
+
+DOCX can currently provide semantic inventory, but its pagination is synthetic. Visual/page
+evidence is `unsupported_for_visual_evidence` until a Modal-only fixed-layout derivative is
+implemented, versioned, hashed, and measured.
+
+See [benchmark readiness](../docs/20_DOCUMENT_EXTRACTION_BENCHMARK_READINESS.md) and the
+[cloud harness design](../docs/superpowers/specs/2026-09-08-cloud-document-extraction-harness-design.md)
+before interpreting any result.
+
+## Production deployment remains separate
+
+Configure the protected GitHub environment `modal-production` with required reviewers, protected
+branches, and `MODAL_ID`/`MODAL_ID_SECRET`. The deployment workflow requires the exact
+confirmation `deploy`, refuses refs other than `refs/heads/main`, and runs:
+
+```bash
+uv run --python 3.13 modal deploy --env main deployment/modal_worker.py
+```
+
+This registers declarations; it does not call `QwenWorker.extract_batch`. Image-build and storage
+charges may still occur. The first separately authorized invocation can load weights into Modal
+cache Volumes and allocate an L40S.
+
+Production runtime configuration is:
 
 ```dotenv
 APP_ENV=production
@@ -96,27 +168,22 @@ MODAL_APP_NAME=georeport3d-qwen
 MODAL_CLASS_NAME=QwenWorker
 ```
 
-Production configuration rejects the mock provider. A Modal resolution or invocation failure is
-reported as unavailable; it does not switch providers.
+The API still lacks `/analyze` and versioned prompt/render assembly, so deploying the worker alone
+does not create an end-to-end application.
 
-## Separately authorized smoke investigation
+## Evidence required before release
 
-A paid smoke invocation requires separate user authorization after all of these checks:
+A separately authorized smoke run must verify, without returning document content:
 
-1. The reviewed release deploys and the expected app/class identity is present.
-2. The API's `/budget` state and hard-stop capacity are reviewed.
-3. A cache miss is confirmed; a cache hit must avoid the GPU call.
-4. The job estimate/reservation is approved under the configured cap.
-5. The input is bounded, permitted, and non-sensitive.
+1. Exact model/revision and L40S allocation.
+2. Image build, CUDA/vLLM readiness within the startup timeout, and actual memory fit.
+3. Required response-schema forwarding, non-thinking mode, and validated result envelope.
+4. Zero automatic retries, no hardware fallback, maximum two containers, and observed
+   scale-to-zero.
+5. Redacted duration and cost evidence.
+6. Failure behavior for missing data, hash mismatch, invalid schema, wrong metadata, and wrong
+   document provenance.
 
-Capture only redacted operational evidence: SDK version, build result, readiness/error code, GPU
-profile, duration, cost, and observed scale-down. Do not return credentials, prompts, report text,
-page images, raw model output, or model weights as debugging evidence.
-
-The later smoke must verify model access, L4 fit, readiness before timeout, result-envelope shape,
-zero retries, one-container maximum, and actual scale-to-zero. Speculative MTP remains a benchmark
-candidate until measured against a non-MTP run.
-
-No live Modal verification was performed for this hardening change. Offline source and unit tests
-do not prove credential validity, SDK compatibility, image build, secret/volume availability,
-model access, L4 fit, vLLM readiness, paid inference, or observed scale-to-zero behavior.
+A field-accuracy release gate additionally requires a representative, human-reviewed
+`field_gold` corpus. Do not convert provisional token recall or OCR agreement into a release
+threshold.

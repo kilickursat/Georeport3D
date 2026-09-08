@@ -21,16 +21,18 @@ build/
 *.log
 
 # Source documents used for benchmarking stay out of the repository. They are
-# third-party engineering reports, large, and not ours to redistribute; the
-# repository is public. Modal mounts them from local disk at run time.
+# operator-controlled engineering reports and may be confidential or subject to
+# redistribution limits. A Modal function reads them by logical dataset ID from a
+# pre-provisioned read-only Volume or CloudBucketMount; developer workstations and
+# GitHub runners never upload or mount local report files.
 *.pdf
 *.docx
 !tests/**/*.pdf
 !tests/**/*.docx
 
-# Raw benchmark output. Regenerable by re-running the script that made it, and it
-# quotes text recovered from those same third-party reports. The findings that
-# matter are distilled into PLAN.md, which is what review should read.
+# Raw benchmark output can contain recovered report text or model answers. It stays
+# in cloud result storage. Only a sanitized aggregate summary may be attached to a
+# GitHub Actions run or distilled into reviewed documentation.
 docling_bench_result.json
 docling_ocr_probe_result.json
 ocr_comparison_result.json

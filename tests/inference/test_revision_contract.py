@@ -57,7 +57,9 @@ def test_settings_carry_the_pinned_revision_rather_than_nothing() -> None:
     assert Settings(app_env="test").model_revision == MODEL_REVISION
 
 
-@pytest.mark.parametrize("moving", ["main", "latest", "", "HEAD", "abc123", MODEL_REVISION.upper()])
+@pytest.mark.parametrize(
+    "moving", ["main", "latest", "", "HEAD", "abc123", MODEL_REVISION.upper()]
+)
 def test_a_moving_or_malformed_revision_is_refused(moving: str) -> None:
     """A tag can be repointed at different weights; a commit cannot."""
     with pytest.raises(ValueError, match="40 lowercase hexadecimal"):
@@ -89,6 +91,7 @@ def test_the_worker_refuses_a_request_for_a_revision_it_does_not_serve() -> None
         "model_revision": OTHER_REVISION,
         "prompt_version": "v1",
         "preprocess_version": "v1",
+        "response_schema": {"type": "object"},
     }
 
     with pytest.raises(ValueError, match="invalid request"):
@@ -97,7 +100,7 @@ def test_the_worker_refuses_a_request_for_a_revision_it_does_not_serve() -> None
     # The same request differing only in revision is accepted, so the rejection is
     # attributable to the revision rather than to anything else in the payload.
     accepted = validate({**request, "model_revision": MODEL_REVISION})  # type: ignore[operator]
-    assert accepted[2] == MODEL_REVISION
+    assert accepted[3] == MODEL_REVISION
 
 
 # -- the provider ----------------------------------------------------------------
@@ -134,6 +137,7 @@ def _request(revision: str = MODEL_REVISION) -> InferenceRequest:
         prompt_version="v1",
         preprocess_version="v1",
         model_revision=revision,
+        response_schema={"type": "object"},
     )
 
 

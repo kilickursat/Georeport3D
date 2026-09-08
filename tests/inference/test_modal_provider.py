@@ -28,6 +28,7 @@ def _request(
     model_revision: str | None = "revision-1",
     prompt_version: str = "prompt-v1",
     preprocess_version: str = "preprocess-v1",
+    response_schema: dict[str, object] | None = None,
 ) -> InferenceRequest:
     return InferenceRequest(
         messages=[{"role": "user", "content": content}],
@@ -35,6 +36,7 @@ def _request(
         model_revision=model_revision,
         prompt_version=prompt_version,
         preprocess_version=preprocess_version,
+        response_schema=response_schema or {"type": "object"},
     )
 
 
@@ -66,10 +68,12 @@ class _FakeRemoteMethod:
         *,
         error: Exception | None = None,
         mutate_messages: bool = False,
+        mutate_schema: bool = False,
     ) -> None:
         self.response = response
         self.error = error
         self.mutate_messages = mutate_messages
+        self.mutate_schema = mutate_schema
         self.calls: list[list[dict[str, object]]] = []
 
     def remote(self, payload: list[dict[str, object]]) -> object:
@@ -77,6 +81,9 @@ class _FakeRemoteMethod:
         if self.mutate_messages:
             messages = payload[0]["messages"]
             messages[0]["content"] = "remote mutation"  # type: ignore[index]
+        if self.mutate_schema:
+            schema = payload[0]["response_schema"]
+            schema["title"] = "remote mutation"  # type: ignore[index]
         if self.error is not None:
             raise self.error
         return self.response
@@ -141,10 +148,72 @@ class ModalInferenceProviderTests(unittest.TestCase):
                     "model_revision": "revision-1",
                     "prompt_version": "prompt-v1",
                     "preprocess_version": "preprocess-v1",
+                    "response_schema": {"type": "object"},
                 }
             ],
         )
         self.assertTrue(results[0].ok)
+
+    def test_schema_is_forwarded_exactly_and_isolated_from_remote_mutation(self) -> None:
+        schema: dict[str, object] = {
+            "type": "object",
+            "properties": {"document_id": {"type": "string"}},
+            "required": ["document_id"],
+        }
+        request = _request(response_schema=schema)
+        method = _FakeRemoteMethod([_success()], mutate_schema=True)
+        provider = ModalInferenceProvider(
+            "app",
+            "QwenWorker",
+            "deployed-model",
+            resolver=_Resolver(_FakeWorker(method)),
+        )
+
+        provider.extract_batch([request])
+        assert request.response_schema is not None
+
+        self.assertEqual(request.response_schema, schema)
+        self.assertEqual(method.calls[0][0]["response_schema"], schema)
+
+    def test_invalid_schema_is_rejected_before_modal_is_resolved(self) -> None:
+        invalid_schemas: list[object] = [
+            None,
+            {},
+            [],
+            "object",
+            {"type": "array"},
+            {"type": "object", "default": object()},
+            {"type": "object", "default": float("nan")},
+            {"type": "object", "required": ("document_id",)},
+            {"type": "object", "description": "x" * 100_001},
+        ]
+
+        deeply_nested: dict[str, object] = {"type": "object"}
+        cursor = deeply_nested
+        for _ in range(1_100):
+            child: dict[str, object] = {"type": "object"}
+            cursor["properties"] = {"child": child}
+            cursor = child
+        invalid_schemas.append(deeply_nested)
+
+        for schema in invalid_schemas:
+            resolver = _Resolver(error=AssertionError("must not resolve invalid schema"))
+            provider = ModalInferenceProvider(
+                "app",
+                "QwenWorker",
+                "deployed-model",
+                resolver=resolver,
+            )
+            request = _request()
+            object.__setattr__(request, "response_schema", schema)
+
+            with self.subTest(schema=schema), self.assertRaisesRegex(
+                InferenceUnavailableError,
+                "^Modal inference request schema is invalid$",
+            ):
+                provider.extract_batch([request])
+
+            self.assertEqual(resolver.calls, 0)
 
     def test_empty_batch_short_circuits_without_resolving(self) -> None:
         resolver = _Resolver(error=AssertionError("must not resolve an empty batch"))

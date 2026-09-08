@@ -1,0 +1,8 @@
+schema_version: 1
+datasets:
+  - dataset_id: dart-d2-cbd2-gbr-v1
+    cloud_path: dart-d2/cbd2_20per_geotechnicalbaselinereport.pdf
+    sha256: b40d2473e54da9a646aa956f5b2fc96f2bb2ff0f896f24f74f88274e1c58e68a
+    source_format: pdf
+    annotation_status: provisional_tokens
+    page_selection: [79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91]

@@ -1,75 +1,119 @@
-"""Score Docling's OCR against baidu/Unlimited-OCR on real engineering drawings.
+"""Compare OCR engines on a manifest-selected report, entirely inside Modal.
 
-The document backend recovers almost nothing from CAD drawing sheets through a PDF
-text layer, and `docling_ocr_probe.py` showed OCR recovers the text but not the
-regions: Docling's layout model still detects nothing on the nine geologic profile
-sheets, so there is no box for a citation to point at.
+The current DART case contains provisional hand-verified tokens, not field-level
+ground truth. This script may therefore report diagnostic token recall only. Source
+pages, OCR text, and missed/matched values remain in the cloud results Volume; the
+caller receives aggregate counts, timing-independent completion state, and no text.
 
-`baidu/Unlimited-OCR` is a 3B image-text-to-text model that emits `<|det|>` bounding
-boxes alongside text, so it could replace both halves. Whether it should is a
-measurement, not a preference, and character count is the wrong measure - an engine
-can emit more text and still miss the borehole identifiers.
-
-So both engines are scored on recall of tokens known to be on each sheet, taken from
-the report itself: borehole identifiers, strata names, reach labels, and street
-names. Getting `LIMESTONE` and `T-201` matters; getting the drafter's username does
-not.
-
-Two functions with separate images, because Docling pins a torch version and the
-model asks for another. Neither has to win that argument.
-
-    modal run deployment/ocr_comparison.py
+    modal run deployment/ocr_comparison.py --run-id <unique-run-id>
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import modal
 
 sys.path.insert(0, Path(__file__).parent.parent.as_posix())
 
+from georeport3d.evaluation.cloud import (  # noqa: E402
+    resolve_dataset,
+    validate_run_id,
+    verify_dataset_hash,
+    write_raw_cloud_result,
+)
+from georeport3d.evaluation.manifest import AnnotationStatus  # noqa: E402
+from georeport3d.evaluation.matching import score_diagnostic_tokens  # noqa: E402
+from georeport3d.evaluation.provisional import (  # noqa: E402
+    DART_D2_PROVISIONAL_TOKENS,
+)
+
 TIMEOUT_SECONDS = 3600
 GPU = "A10G"
 PAGE_RANGE = (79, 91)
-RENDER_SCALE = 200 / 72  # 200 DPI, enough for small annotation text on a plan sheet
-
-REPORT = Path(__file__).parent.parent / "cbd2_20per_geotechnicalbaselinereport.pdf"
-REMOTE_REPORT = "/data/report.pdf"
+PAGES = tuple(range(PAGE_RANGE[0], PAGE_RANGE[1] + 1))
+RENDER_SCALE = 200 / 72
+ROOT = Path(__file__).parent.parent
+MANIFEST = ROOT / "config" / "evaluation_datasets.yaml"
+REMOTE_MANIFEST = "/opt/georeport3d/evaluation_datasets.yaml"
+DEFAULT_DATASET_ID = "dart-d2-cbd2-gbr-v1"
+UNLIMITED_OCR_ID = "baidu/Unlimited-OCR"
+UNLIMITED_OCR_REVISION = "07dea832e22aefee32ad281d4b80551282e1c168"
 
 app = modal.App("georeport3d-ocr-comparison")
 hf_cache = modal.Volume.from_name("georeport3d-hf-cache", create_if_missing=True)
-
-# Both engines pull weights from the HF Hub, so both want a token: the models are
-# public and download anonymously, but under a rate limit a 3B download can trip.
-#
-# A secret existing in the workspace does not put it in a container. It is injected
-# only where a function names it, which is why runs without this line emitted
-# "You are sending unauthenticated requests to the HF Hub" despite the secret being
-# configured.
-hf_secret = modal.Secret.from_name("huggingface-secret")
+benchmark_data = modal.Volume.from_name(
+    "georeport3d-benchmark-data", create_if_missing=False
+)
+benchmark_results = modal.Volume.from_name(
+    "georeport3d-benchmark-results", create_if_missing=False
+)
 
 
-def report_hf_auth() -> None:
-    """Say whether the token actually arrived, without printing it.
+@contextmanager
+def _redirect_process_output(path: Path) -> Iterator[None]:
+    """Capture Python, native, and inherited process output in a private file."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    try:
+        with path.open("ab", buffering=0) as target:
+            os.dup2(target.fileno(), 1)
+            os.dup2(target.fileno(), 2)
+            yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_stdout, 1)
+        os.dup2(saved_stderr, 2)
+        os.close(saved_stdout)
+        os.close(saved_stderr)
 
-    Attaching the secret is only half the contract: `huggingface_hub` reads `HF_TOKEN`
-    (or `HUGGING_FACE_HUB_TOKEN`), so a secret whose key is named anything else is
-    injected and still ignored. Names only - a value would end up in the run log.
-    """
-    import os
 
-    present = sorted(k for k in os.environ if "HF" in k or "HUGGING" in k)
-    authed = bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
-    print(f"hf auth: {'yes' if authed else 'NO'} (env keys seen: {present})", flush=True)
+def score(page: int, text: str) -> dict[str, object]:
+    """Return diagnostic recall, never a field-accuracy claim."""
+    diagnostic = score_diagnostic_tokens(
+        DART_D2_PROVISIONAL_TOKENS.get(page, ()),
+        text,
+        annotation_status=AnnotationStatus.PROVISIONAL_TOKENS,
+    )
+    return {
+        "page": page,
+        "chars": len(text),
+        **diagnostic.model_dump(mode="json"),
+    }
+
+
+def _summary(engine: str, rows: list[dict[str, object]]) -> dict[str, object]:
+    expected = sum(int(row["expected"]) for row in rows)
+    found = sum(int(row["found"]) for row in rows)
+    return {
+        "engine": engine,
+        "annotation_status": AnnotationStatus.PROVISIONAL_TOKENS.value,
+        "metric": "diagnostic_token_recall",
+        "complete": all(int(row["chars"]) > 0 for row in rows),
+        "pages_requested": len(rows),
+        "pages_with_text": sum(int(row["chars"]) > 0 for row in rows),
+        "characters_recovered": sum(int(row["chars"]) for row in rows),
+        "expected_tokens": expected,
+        "found_tokens": found,
+        "diagnostic_recall": round(found / expected, 6) if expected else None,
+    }
+
 
 docling_image = (
     modal.Image.debian_slim(python_version="3.13")
     .apt_install("libgl1", "libglib2.0-0")
-    .uv_pip_install("docling==2.123.0", "pydantic>=2.9,<3")
-    .add_local_file(REPORT.as_posix(), REMOTE_REPORT)
+    .uv_pip_install("docling==2.123.0", "pydantic>=2.9,<3", "pyyaml==6.0.3")
+    .env({"HF_HOME": "/cache"})
+    .add_local_python_source("document", "georeport3d")
+    .add_local_file(MANIFEST.as_posix(), REMOTE_MANIFEST)
 )
 
 baidu_image = (
@@ -77,7 +121,6 @@ baidu_image = (
     .apt_install("libgl1", "libglib2.0-0")
     .uv_pip_install(
         "torch==2.10.0",
-        # The model ships its own modeling file, which imports these directly.
         "torchvision",
         "matplotlib",
         "transformers==4.57.1",
@@ -89,46 +132,23 @@ baidu_image = (
         "tiktoken",
         "addict",
         "easydict",
+        "pydantic>=2.9,<3",
+        "pyyaml==6.0.3",
     )
     .env({"HF_HOME": "/cache", "HF_HUB_ENABLE_HF_TRANSFER": "0"})
-    .add_local_file(REPORT.as_posix(), REMOTE_REPORT)
+    .add_local_python_source("document", "georeport3d")
+    .add_local_file(MANIFEST.as_posix(), REMOTE_MANIFEST)
 )
 
-# Tokens verified present on each sheet, read off the report itself. Deliberately
-# the values a geotechnical pipeline exists to capture - borehole identifiers,
-# strata, reaches, and the streets that locate them - not incidental title-block text.
-GROUND_TRUTH: dict[int, tuple[str, ...]] = {
-    79: ("museum way", "metro center", "commerce", "cbd east", "victory", "akard"),
-    80: ("dallas", "austin chalk", "eagle ford", "geologic map"),
-    81: ("clay", "sand", "limestone", "shale", "sandstone", "legend", "recovery"),
-    82: ("reach 1", "reach 5", "reach 10", "location plan", "boring"),
-    83: ("fill", "alluvium", "weathered", "limestone", "shale", "turnout", "victory"),
-    84: ("museum way", "houston", "river st", "woodall rodgers", "fill", "shale"),
-    85: ("t 1", "t 5", "t 6", "t 102", "mckinney", "munger", "ross ave", "reach 1"),
-    86: ("t 103", "b 1", "ts 104", "pacific ave", "elm st", "metro center", "shale"),
-    87: ("t 201", "field st", "akard", "cross passage 1", "limestone", "shale"),
-    88: ("ts 202", "b 3", "t 203", "t 204", "ervay", "commerce station", "limestone"),
-    89: ("t 205", "ts 207", "ts 208", "harwood", "pearl", "main st", "limestone"),
-    90: ("ts 206", "ts 209", "t 112", "p 102", "elm st", "cbd east", "reach 8"),
-    91: ("good latimer", "turnout", "fill", "alluvium", "limestone", "portal"),
-}
 
-
-def score(page: int, text: str) -> dict:
-    """Recall of the tokens known to be on this sheet."""
-    from document.terms import normalize
-
-    haystack = normalize(text)
-    expected = GROUND_TRUTH.get(page, ())
-    found = [token for token in expected if normalize(token) in haystack]
-    return {
-        "page": page,
-        "chars": len(text),
-        "expected": len(expected),
-        "found": len(found),
-        "recall": round(len(found) / len(expected), 3) if expected else None,
-        "missed": [t for t in expected if t not in found],
-    }
+def _cloud_case(dataset_id: str):
+    case, report = resolve_dataset(Path(REMOTE_MANIFEST), dataset_id)
+    if case.annotation_status is not AnnotationStatus.PROVISIONAL_TOKENS:
+        raise RuntimeError("dataset is not eligible for provisional token scoring")
+    if any(page not in case.page_selection for page in PAGES):
+        raise RuntimeError("dataset does not allow the configured comparison pages")
+    verify_dataset_hash(report, case.sha256)
+    return case, report
 
 
 @app.function(
@@ -136,18 +156,23 @@ def score(page: int, text: str) -> dict:
     cpu=4.0,
     memory=8192,
     timeout=TIMEOUT_SECONDS,
-    secrets=[hf_secret],
-    # The scoring helper imports from the repo, so the package travels with the call.
+    retries=0,
+    volumes={
+        "/cache": hf_cache,
+        "/benchmarks": benchmark_data.with_mount_options(read_only=True),
+        "/results": benchmark_results,
+    },
 )
-def run_docling() -> dict[int, str]:
-    """Docling with OCR on, over the drawing sheets."""
+def run_docling(run_id: str, dataset_id: str) -> dict[str, object]:
+    """Run Docling OCR and return a sanitized summary."""
     from collections import defaultdict
-
-    report_hf_auth()
 
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    safe_run_id = validate_run_id(run_id)
+    case, report = _cloud_case(dataset_id)
 
     options = PdfPipelineOptions()
     options.do_ocr = True
@@ -155,48 +180,66 @@ def run_docling() -> dict[int, str]:
     converter = DocumentConverter(
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
     )
-    document = converter.convert(Path(REMOTE_REPORT), page_range=PAGE_RANGE).document
+    document = converter.convert(report, page_range=PAGE_RANGE).document
 
-    texts: dict[int, list[str]] = defaultdict(list)
+    collected: dict[int, list[str]] = defaultdict(list)
     for item in getattr(document, "texts", None) or ():
         text = getattr(item, "text", "")
-        prov = getattr(item, "prov", None) or ()
-        if prov and isinstance(text, str) and text.strip():
-            texts[prov[0].page_no].append(text.strip())
-    return {page: " ".join(parts) for page, parts in texts.items()}
+        provenance = getattr(item, "prov", None) or ()
+        if provenance and isinstance(text, str) and text.strip():
+            collected[provenance[0].page_no].append(text.strip())
+    texts = {page: " ".join(collected.get(page, ())) for page in PAGES}
+    rows = [score(page, texts[page]) for page in PAGES]
+    write_raw_cloud_result(
+        safe_run_id,
+        "ocr_docling.json",
+        {"dataset_id": case.dataset_id, "engine": "docling", "texts": texts, "rows": rows},
+    )
+    benchmark_results.commit()
+    return {"dataset_id": case.dataset_id, **_summary("docling", rows)}
 
 
 @app.function(
     image=baidu_image,
     gpu=GPU,
-    volumes={"/cache": hf_cache},
     timeout=TIMEOUT_SECONDS,
-    secrets=[hf_secret],
+    retries=0,
+    volumes={
+        "/cache": hf_cache,
+        "/benchmarks": benchmark_data.with_mount_options(read_only=True),
+        "/results": benchmark_results,
+    },
 )
-def run_baidu() -> dict:
-    """baidu/Unlimited-OCR over the same sheets, rendered at 200 DPI."""
+def run_baidu(run_id: str, dataset_id: str) -> dict[str, object]:
+    """Run Unlimited-OCR and return a sanitized summary."""
     import tempfile
-
-    report_hf_auth()
 
     import pypdfium2
     import torch
     from transformers import AutoModel, AutoTokenizer
 
+    safe_run_id = validate_run_id(run_id)
+    case, report = _cloud_case(dataset_id)
+
     workdir = Path(tempfile.mkdtemp())
-    pdf = pypdfium2.PdfDocument(REMOTE_REPORT)
+    pdf = pypdfium2.PdfDocument(report)
     images: dict[int, Path] = {}
-    for page_number in range(PAGE_RANGE[0], PAGE_RANGE[1] + 1):
+    for page_number in PAGES:
         rendered = pdf[page_number - 1].render(scale=RENDER_SCALE).to_pil()
         target = workdir / f"page_{page_number}.png"
         rendered.save(target)
         images[page_number] = target
     print(f"rendered {len(images)} pages", flush=True)
 
-    tokenizer = AutoTokenizer.from_pretrained("baidu/Unlimited-OCR", trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        UNLIMITED_OCR_ID,
+        revision=UNLIMITED_OCR_REVISION,
+        trust_remote_code=True,
+    )
     model = (
         AutoModel.from_pretrained(
-            "baidu/Unlimited-OCR",
+            UNLIMITED_OCR_ID,
+            revision=UNLIMITED_OCR_REVISION,
             trust_remote_code=True,
             use_safetensors=True,
             torch_dtype=torch.bfloat16,
@@ -205,246 +248,79 @@ def run_baidu() -> dict:
         .cuda()
     )
 
-    results: dict[int, str] = {}
-    for page_number, path in images.items():
-        out = workdir / f"out_{page_number}"
-        out.mkdir(exist_ok=True)
+    texts: dict[int, str] = {}
+    library_logs: dict[int, str] = {}
+    for page_number, image_path in images.items():
+        output_dir = workdir / f"out_{page_number}"
+        output_dir.mkdir(exist_ok=True)
+        library_log_path = workdir / f"library_{page_number}.log"
         try:
-            returned = model.infer(
-                tokenizer,
-                prompt="<image>document parsing.",
-                image_file=path.as_posix(),
-                output_path=out.as_posix(),
-                # "gundam" mode: tiles the page, which is what a dense plan sheet needs.
-                base_size=1024,
-                image_size=640,
-                crop_mode=True,
-                max_length=32768,
-                no_repeat_ngram_size=35,
-                ngram_window=128,
-                save_results=True,
-            )
-        except Exception as exc:  # noqa: BLE001 - one bad page must not lose the rest
-            results[page_number] = ""
-            print(f"p{page_number}: FAILED {type(exc).__name__}: {exc}", flush=True)
-            continue
+            with _redirect_process_output(library_log_path):
+                returned = model.infer(
+                    tokenizer,
+                    prompt="<image>document parsing.",
+                    image_file=image_path.as_posix(),
+                    output_path=output_dir.as_posix(),
+                    base_size=1024,
+                    image_size=640,
+                    crop_mode=True,
+                    max_length=32768,
+                    no_repeat_ngram_size=35,
+                    ngram_window=128,
+                    save_results=True,
+                )
+        except Exception as exc:  # noqa: BLE001 - retain other page diagnostics
+            texts[page_number] = ""
+            print(f"p{page_number}: FAILED {type(exc).__name__}", flush=True)
+        else:
+            text = returned if isinstance(returned, str) else ""
+            if not text:
+                for produced in sorted(output_dir.rglob("*")):
+                    if produced.is_file() and produced.suffix in {
+                        ".txt",
+                        ".md",
+                        ".mmd",
+                        ".json",
+                    }:
+                        text += produced.read_text(errors="ignore")
+            texts[page_number] = text
+            print(f"p{page_number}: {len(text)} chars", flush=True)
 
-        text = returned if isinstance(returned, str) else ""
-        if not text:
-            # `save_results` writes the parse to disk; prefer it when infer returns
-            # a structure rather than a string.
-            for produced in sorted(out.rglob("*")):
-                if produced.is_file() and produced.suffix in {".txt", ".md", ".mmd", ".json"}:
-                    text += produced.read_text(errors="ignore")
-        results[page_number] = text
-        print(f"p{page_number}: {len(text)} chars", flush=True)
+        private_log = library_log_path.read_text(encoding="utf-8", errors="replace")
+        if len(private_log) > 262_144:
+            private_log = private_log[:262_144] + "\n[TRUNCATED]"
+        library_logs[page_number] = private_log
 
-    return {
-        "texts": results,
-        "det_tags": {p: t.count("<|det|>") for p, t in results.items()},
-    }
+    rows = [score(page, texts.get(page, "")) for page in PAGES]
+    write_raw_cloud_result(
+        safe_run_id,
+        "ocr_unlimited.json",
+        {
+            "dataset_id": case.dataset_id,
+            "engine": UNLIMITED_OCR_ID,
+            "engine_revision": UNLIMITED_OCR_REVISION,
+            "texts": texts,
+            "library_logs": library_logs,
+            "det_tags": {page: text.count("<|det|>") for page, text in texts.items()},
+            "rows": rows,
+        },
+    )
+    benchmark_results.commit()
+    return {"dataset_id": case.dataset_id, **_summary(UNLIMITED_OCR_ID, rows)}
 
 
 @app.local_entrypoint()
-def main() -> None:
-    docling_future = run_docling.spawn()
-    baidu = run_baidu.remote()
+def main(run_id: str, dataset_id: str = DEFAULT_DATASET_ID) -> None:
+    """Start the cloud comparison and print sanitized summaries only."""
+    safe_run_id = validate_run_id(run_id)
+    case, _path = resolve_dataset(MANIFEST, dataset_id)
+    if case.annotation_status is not AnnotationStatus.PROVISIONAL_TOKENS:
+        raise SystemExit("this comparison requires a provisional_tokens dataset")
+
+    docling_future = run_docling.spawn(safe_run_id, case.dataset_id)
+    baidu = run_baidu.remote(safe_run_id, case.dataset_id)
     docling = docling_future.get()
-
-    rows = []
-    for page in range(PAGE_RANGE[0], PAGE_RANGE[1] + 1):
-        rows.append(
-            {
-                "docling": score(page, docling.get(page, "")),
-                "baidu": score(page, baidu["texts"].get(str(page), baidu["texts"].get(page, ""))),
-                "det_tags": baidu["det_tags"].get(str(page), baidu["det_tags"].get(page, 0)),
-            }
-        )
-
-    Path("ocr_comparison_result.json").write_text(
-        json.dumps({"rows": rows, "baidu_texts": baidu["texts"]}, indent=2, default=str)
-    )
-
-    print()
-    print("=" * 78)
-    print(f"{'page':<6}{'docling':>10}{'baidu':>10}{'d-chars':>10}{'b-chars':>10}{'det':>7}")
-    print("-" * 78)
-    d_found = d_total = b_found = 0
-    for row in rows:
-        d, b = row["docling"], row["baidu"]
-        d_found += d["found"]
-        b_found += b["found"]
-        d_total += d["expected"]
-        print(
-            f"{d['page']:<6}{d['found']}/{d['expected']:<8}{b['found']}/{b['expected']:<8}"
-            f"{d['chars']:>10}{b['chars']:>10}{row['det_tags']:>7}"
-        )
-    print("-" * 78)
-    print(
-        f"{'TOTAL':<6}{d_found}/{d_total:<8}{b_found}/{d_total:<8}"
-        f"   docling recall {d_found / max(d_total, 1):.1%}"
-        f"   baidu recall {b_found / max(d_total, 1):.1%}"
-    )
-    print("=" * 78)
-    for row in rows:
-        if row["baidu"]["missed"] or row["docling"]["missed"]:
-            print(f"  p{row['docling']['page']}")
-            print(f"     docling missed: {row['docling']['missed']}")
-            print(f"     baidu   missed: {row['baidu']['missed']}")
-
-
-@app.function(image=docling_image, timeout=TIMEOUT_SECONDS, retries=0)
-def confirm_identifiers(emitted: dict[str, list[str]]) -> dict:
-    """Check identifiers a vision model reported against OCR of the same sheets.
-
-    `qwen_vision_probe.py` lists the borehole and test-pit identifiers the model read,
-    but it cannot say whether any was invented: `GROUND_TRUTH` is a whitelist of tokens
-    verified present, not an inventory of the sheet, and it holds strata and place
-    names with almost no identifiers among them. Scored against it, `CBD-2` - the
-    contract number in every title block - looked like a fabrication on all five pages.
-
-    Precision is the number that matters for a pipeline that cites its sources: a
-    confident wrong borehole is worse than silence, because the citation would carry it
-    into the database. So each identifier is looked for in the page's own OCR text.
-
-    Runs on CPU here rather than on a workstation, because a local Docling pass over
-    this report exhausted the machine it was run on.
-    """
-    import re
-
-    from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
-    from docling.document_converter import DocumentConverter, PdfFormatOption
-
-    def fold(text: str) -> str:
-        """Bare alphanumerics, so 'B-1', 'B 1' and 'B1' compare equal.
-
-        OCR of a drawing sheet is inconsistent about hyphens and spacing inside an
-        identifier, and treating those spellings as different strings would score a
-        correct read as an invention.
-        """
-        return re.sub(r"[^a-z0-9]+", "", text.casefold())
-
-    options = PdfPipelineOptions()
-    options.do_ocr = True
-    options.do_table_structure = False
-    converter = DocumentConverter(
-        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
-    )
-    document = converter.convert(Path(REMOTE_REPORT), page_range=PAGE_RANGE).document
-
-    text_by_page: dict[int, list[str]] = {}
-    for item, _level in document.iterate_items():
-        text = getattr(item, "text", None)
-        if not text:
-            continue
-        for provenance in getattr(item, "prov", []) or []:
-            text_by_page.setdefault(provenance.page_no, []).append(text)
-
-    rows = []
-    for page_key, identifiers in sorted(emitted.items(), key=lambda pair: int(pair[0])):
-        page = int(page_key)
-        haystack = fold(" ".join(text_by_page.get(page, [])))
-        confirmed = [token for token in identifiers if fold(token) in haystack]
-        rows.append(
-            {
-                "page": page,
-                "emitted": list(identifiers),
-                "confirmed": confirmed,
-                "unconfirmed": [t for t in identifiers if fold(t) not in haystack],
-                "ocr_chars": len(haystack),
-            }
-        )
-        print(
-            f"p{page}: {len(confirmed)}/{len(identifiers)} confirmed"
-            f"  found={confirmed}  missing={rows[-1]['unconfirmed']}",
-            flush=True,
-        )
-    return {"rows": rows}
-
-
-@app.local_entrypoint()
-def verify() -> None:
-    """Confirm the vision probe's identifiers against OCR.
-
-        modal run deployment/ocr_comparison.py::verify
-    """
-    result_path = Path(__file__).parent.parent / "qwen_vision_probe_result.json"
-    if not result_path.exists():
-        raise SystemExit(f"run the vision probe first: {result_path} is missing")
-
-    rows = json.loads(result_path.read_text())["rows"]
-    emitted = {str(row["page"]): row["identifiers_emitted"] for row in rows}
-
-    outcome = confirm_identifiers.remote(emitted)
-    confirmed = sum(len(row["confirmed"]) for row in outcome["rows"])
-    total = sum(len(row["emitted"]) for row in outcome["rows"])
-
-    print()
-    print("=" * 74)
-    print(f"IDENTIFIER PRECISION {confirmed}/{total} = {confirmed / max(total, 1):.1%}")
-    print("Unconfirmed is an upper bound on invention, not a count of it: OCR misses")
-    print("text too, so an identifier it failed to recover lands in the same column.")
-    print("=" * 74)
-
-
-@app.local_entrypoint()
-def verify_two_readers() -> None:
-    """Confirm the vision probe's identifiers against two independent OCR engines.
-
-        modal run deployment/ocr_comparison.py::verify_two_readers
-
-    Docling alone confirmed 10 of 18. That number cannot separate "the model invented
-    this" from "Docling could not read it", and the two have opposite consequences: the
-    first says the model is unusable for a pipeline that cites its sources, the second
-    says OCR is - which is the case this project already documented. A second reader
-    that finds an identifier settles it in the model's favour; one that also misses it
-    leaves the charge open rather than proving it.
-    """
-    import re
-
-    result_path = Path(__file__).parent.parent / "qwen_vision_probe_result.json"
-    if not result_path.exists():
-        raise SystemExit(f"run the vision probe first: {result_path} is missing")
-
-    rows = json.loads(result_path.read_text())["rows"]
-    emitted = {str(row["page"]): row["identifiers_emitted"] for row in rows}
-
-    docling_future = confirm_identifiers.spawn(emitted)
-    baidu = run_baidu.remote()
-    docling = docling_future.get()
-
-    def fold(text: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", text.casefold())
-
-    baidu_text = {int(page): fold(text) for page, text in baidu["texts"].items()}
-
-    print()
-    print("=" * 74)
-    print(f"{'page':<6}{'identifier':<12}{'docling':<10}{'baidu':<9}verdict")
-    print("-" * 74)
-    both = neither = one = 0
-    for row in docling["rows"]:
-        page = row["page"]
-        haystack = baidu_text.get(page, "")
-        for token in row["emitted"]:
-            in_docling = token in row["confirmed"]
-            in_baidu = fold(token) in haystack
-            if in_docling and in_baidu:
-                verdict, _ = "on the page", (both := both + 1)
-            elif in_docling or in_baidu:
-                verdict, _ = "on the page", (one := one + 1)
-            else:
-                verdict, _ = "UNCONFIRMED", (neither := neither + 1)
-            print(
-                f"{page:<6}{token:<12}{str(in_docling):<10}{str(in_baidu):<9}{verdict}"
-            )
-    total = both + one + neither
-    print("-" * 74)
-    print(f"confirmed by both:      {both}")
-    print(f"confirmed by one only:  {one}")
-    print(f"confirmed by neither:   {neither}")
-    print(f"IDENTIFIER PRECISION {both + one}/{total} = {(both + one) / max(total, 1):.1%}")
-    print("Two readers missing the same identifier is still not proof of invention,")
-    print("but it is the strongest evidence available without reading the sheet.")
-    print("=" * 74)
+    print(json.dumps({"docling": docling, "unlimited_ocr": baidu}, indent=2, sort_keys=True))
+    print("These diagnostics are not field precision, field recall, or a release gate.")
+    if not bool(docling.get("complete")) or not bool(baidu.get("complete")):
+        raise SystemExit("cloud OCR comparison was incomplete; inspect private artifacts")
